@@ -12,7 +12,7 @@
 | `blogs/<slug>/assets/` | 该文章用到的图片 / 视频，用相对路径引用 |
 | `blogs/<slug>/refs/` | 文章引用的源码文件，用 Obsidian 语法嵌入：`![[refs/relay.rs]]` |
 | `authors/<id>.yml` | 一位作者一个文件：`name`、`email`、`github`、`bio` |
-| `check/` | 检查脚本，CI 在每个 PR 上运行 |
+| `check/` | 检查脚本，合并前在本地运行 |
 
 ## 👤 作者
 
@@ -56,4 +56,4 @@ bun run check
 
 ## 🤝 参与贡献
 
-`main` 分支受保护，请提交 PR；`check` 工作流通过后即可合并。
+`main` 分支受保护，请提交 PR；合并前在本地运行检查。
