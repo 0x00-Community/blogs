@@ -19,7 +19,7 @@ Before your first post, add `authors/<id>.yml` (see [`authors/jabberwocky238.yml
 
 ```yaml
 name: Your Name
-email: you@example.com
+email: you@example.com     # or a list of addresses
 github: https://github.com/your-github-id
 bio: |
   A few words about yourself.

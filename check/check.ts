@@ -119,9 +119,13 @@ for (const e of await readdir(AUTHORS, { withFileTypes: true })) {
     report(file, `invalid YAML: ${(err as Error).message}`);
     continue;
   }
-  for (const k of AUTHOR_FIELDS) if (!isNonEmptyString(a[k])) report(file, `missing or empty "${k}"`);
+  for (const k of AUTHOR_FIELDS)
+    if (k !== "email" && !isNonEmptyString(a[k])) report(file, `missing or empty "${k}"`);
+  const emails = typeof a.email === "string" ? [a.email] : a.email;
+  if (!(Array.isArray(emails) && emails.length > 0 && emails.every(isNonEmptyString)))
+    report(file, '"email" must be an address or a non-empty list of addresses');
+  else for (const m of emails) if (!EMAIL.test(m)) report(file, `invalid email "${m}"`);
   for (const k of Object.keys(a)) if (!(AUTHOR_FIELDS as readonly string[]).includes(k)) report(file, `unknown field "${k}"`);
-  if (isNonEmptyString(a.email) && !EMAIL.test(a.email)) report(file, `invalid email "${a.email}"`);
   if (isNonEmptyString(a.github) && !GITHUB.test(a.github)) report(file, "github must be https://github.com/<user>");
   authorIds.add(id);
 }
