@@ -114,7 +114,7 @@ prompt 的结尾都一样：把代码写到指定目录、确保能编译通过�
 
 还有第五份：人定架构版，对应第三层 **masterpiece solution**。它也是 AI 写的，但架构是人定的：人先指出“这里底下是五个生命周期”“一个线程、每对连接一个 Future、两个方向乒乓交替、不许用 tokio”，AI 再照着写。
 
-五份代码的完整源码都在文章目录的 `refs/` 下，测试脚本和压测脚本也在。
+正文只展示核心片段。五份代码的完整源码、测试脚本和压测脚本都在文末附录，默认折叠。
 
 ## 二、代码之下：五个生命周期
 
@@ -154,7 +154,11 @@ flow2                       |============================|
 >
 > 模型：Claude Opus 5.5（`claude-opus-5-5`）子 agent。前面是第一节的需求原文，后面是统一的结尾要求。
 
-![[refs/relay.go]]
+![[refs/relay.go#L39-L50]]
+
+![[refs/relay.go#L142-L158]]
+
+![[refs/relay.go#L166-L205]]
 
 五个生命周期在 Go 版里：
 
@@ -176,7 +180,9 @@ flow2                       |============================|
 >
 > 模型：Claude Opus 5.5（`claude-opus-5-5`）子 agent。前面是第一节的需求原文，后面是统一的结尾要求。
 
-![[refs/relay_tokio.rs]]
+![[refs/relay_tokio.rs#L68-L102]]
+
+![[refs/relay_tokio.rs#L121-L142]]
 
 五个生命周期在 tokio 版里：
 
@@ -203,7 +209,9 @@ Go 和 tokio 这两份就是 popular solution：去搜“Go WebSocket relay”�
 
 接下来是人的调优。第 3、4 个 prompt 不再只说技术栈，而是加约束：不许用 tokio，再进一步，完全单线程。约束把 AI 从社区默认写法里推出来，它只能自己处理协议、自己调度连接。
 
-![[refs/relay_std.rs]]
+![[refs/relay_std.rs#L268-L281]]
+
+![[refs/relay_std.rs#L294-L307]]
 
 不许用 tokio，这个 agent 连 tungstenite 也没用，SHA-1、Base64、HTTP 握手、帧编解码全部手写，约 190 行。中转部分约 130 行：
 
@@ -227,7 +235,11 @@ Go 和 tokio 这两份就是 popular solution：去搜“Go WebSocket relay”�
 >
 > 模型：Claude Opus 5.5（`claude-opus-5-5`）子 agent。前面是第一节的需求原文，后面是统一的结尾要求。
 
-![[refs/relay_single.rs]]
+![[refs/relay_single.rs#L284-L292]]
+
+![[refs/relay_single.rs#L406-L409]]
+
+![[refs/relay_single.rs#L579-L600]]
 
 第四个 prompt 只多了“完全单线程”五个字。agent 交出来的东西，确实只有一个线程，测试也全过：
 
@@ -253,7 +265,7 @@ Go 和 tokio 这两份就是 popular solution：去搜“Go WebSocket relay”�
 
 同样是一个线程、一个 `poll(2)`、不用 tokio。区别在于，人先告诉 AI：底下有五个生命周期，它们同生共死，所以每对连接只该有一个执行单元。这一步不是调优，不是再加一条技术约束，而是一个架构判断。
 
-![[refs/relay_jw238.rs]]
+![[refs/relay_jw238.rs#L338-L348]]
 
 - **整个服务器只有一个线程。** 一次 `poll(2)` 等所有 socket，一个几十行的 executor 轮流 poll 被唤醒的 Future。大厅是 `Rc<RefCell<_>>`，任务借用 reactor 和大厅，全程没有 `'static`。
 - **每一对连接只有一个 Future。** 两条连接、两个方向、一个“轮到谁”的标记，全在 `relay` 返回的那一个 Future 里。
@@ -288,9 +300,7 @@ fn relay<'pipe, 'r, 'rt1: 'pipe, 'rt2: 'pipe, 'flow1: 'pipe, 'flow2: 'pipe>(
 
 ### 正确性：四份都对
 
-我给五份代码跑了同一组行为测试：
-
-![[refs/test.py]]
+我给五份代码跑了同一组行为测试（测试脚本见附录）：
 
 | 版本 | A 断开后 B | A 在大厅里断开，B、C 再连上 | A 在配对前发的消息 | 双向各发 500 条 64KB，A 收完后断开，B 收到 A 的几条（5 轮） |
 | --- | --- | --- | --- | --- |
@@ -384,10 +394,54 @@ AI 能写出每一种封装。**AI 不会告诉你的是：哪些东西本来就
 >
 > —— 查理·卓别林，《大独裁者》（*The Great Dictator*，1940）终场演讲
 
-## 附录：压测脚本
+## 附录：完整代码
+
+正文里只展示了核心片段，完整源码如下，默认折叠。
 
 <details>
-<summary>点击展开</summary>
+<summary>AI solution（一）Go 版</summary>
+
+![[refs/relay.go]]
+
+</details>
+
+<details>
+<summary>AI solution（二）tokio 版</summary>
+
+![[refs/relay_tokio.rs]]
+
+</details>
+
+<details>
+<summary>AI solution（三）std 版</summary>
+
+![[refs/relay_std.rs]]
+
+</details>
+
+<details>
+<summary>AI solution（四）单线程版</summary>
+
+![[refs/relay_single.rs]]
+
+</details>
+
+<details>
+<summary>Human solution 人定架构版</summary>
+
+![[refs/relay_jw238.rs]]
+
+</details>
+
+<details>
+<summary>行为测试脚本</summary>
+
+![[refs/test.py]]
+
+</details>
+
+<details>
+<summary>压测脚本</summary>
 
 ![[refs/bench.py]]
 
