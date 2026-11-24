@@ -7,6 +7,11 @@ import { join, relative, resolve, dirname } from "node:path";
 
 const ROOT = resolve(import.meta.dir, "..");
 const BLOGS = join(ROOT, "blogs");
+const AUTHORS = join(ROOT, "authors");
+const AUTHOR_FIELDS = ["name", "email", "github", "bio"] as const;
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const GITHUB = /^https:\/\/github\.com\/[A-Za-z0-9-]+\/?$/;
+const authorIds = new Set<string>();
 const ENTRY = "index.mdx";
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -38,8 +43,13 @@ function checkFrontmatter(file: string, source: string) {
     const d = String(fm.date instanceof Date ? fm.date.toISOString().slice(0, 10) : fm.date);
     if (!DATE.test(d) || Number.isNaN(Date.parse(d))) report(file, `frontmatter: date must be YYYY-MM-DD, got "${d}"`);
   }
-  if ("authors" in fm && !(Array.isArray(fm.authors) && fm.authors.length > 0 && fm.authors.every(isNonEmptyString)))
-    report(file, "frontmatter: authors must be a non-empty list of strings");
+  if ("authors" in fm) {
+    if (!(Array.isArray(fm.authors) && fm.authors.length > 0 && fm.authors.every(isNonEmptyString)))
+      report(file, "frontmatter: authors must be a non-empty list of author ids");
+    else
+      for (const a of fm.authors)
+        if (!authorIds.has(a)) report(file, `frontmatter: unknown author "${a}" — add authors/${a}.yml`);
+  }
   if ("tags" in fm && !(Array.isArray(fm.tags) && fm.tags.every(isNonEmptyString)))
     report(file, "frontmatter: tags must be a list of strings");
   if ("lang" in fm && !LANGS.includes(fm.lang as (typeof LANGS)[number]))
@@ -93,6 +103,27 @@ async function checkPost(dir: string) {
   } catch (e) {
     report(file, `MDX compile error: ${(e as Error).message}`);
   }
+}
+
+for (const e of await readdir(AUTHORS, { withFileTypes: true })) {
+  const file = join(AUTHORS, e.name);
+  const id = e.name.replace(/\.yml$/, "");
+  if (!e.isFile() || !e.name.endsWith(".yml") || !SLUG.test(id)) {
+    report(file, "authors/ only holds <id>.yml files with a lowercase kebab-case id");
+    continue;
+  }
+  let a: Record<string, unknown>;
+  try {
+    a = parseYaml(await readFile(file, "utf8")) ?? {};
+  } catch (err) {
+    report(file, `invalid YAML: ${(err as Error).message}`);
+    continue;
+  }
+  for (const k of AUTHOR_FIELDS) if (!isNonEmptyString(a[k])) report(file, `missing or empty "${k}"`);
+  for (const k of Object.keys(a)) if (!(AUTHOR_FIELDS as readonly string[]).includes(k)) report(file, `unknown field "${k}"`);
+  if (isNonEmptyString(a.email) && !EMAIL.test(a.email)) report(file, `invalid email "${a.email}"`);
+  if (isNonEmptyString(a.github) && !GITHUB.test(a.github)) report(file, "github must be https://github.com/<user>");
+  authorIds.add(id);
 }
 
 for (const e of await readdir(BLOGS, { withFileTypes: true })) {
