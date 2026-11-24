@@ -1,27 +1,27 @@
 ---
-title: AI 设计的架构为什么烂
+title: "你的 prompt 不是我的 prompt：人类专家的不可替代性"
 date: 2026-11-24
 authors: [jabberwocky238]
 tags: [architecture, ai, golang, rust, websocket]
-summary: 同一个 WebSocket 中转需求，四个 prompt 交给四个 AI agent，四份代码全部通过测试，结构却各不相同：每一份都先把五个同生共死的生命周期拆开，再用一堆机制拴回去。
+summary: AI 面对开放问题给出的是 popular solution；经过人的调优可以变成泛化性更强的 general solution；只有有架构思维的人才能找到 masterpiece solution。一个 WebSocket 中转、四个 AI agent、一份人定架构的代码，把这三层摆出来看。
 lang: zh-CN
-status: draft
+status: staged
 ---
 
 export const many = [
-  { relay: 'relay.go', idle: 78.5, peak: 142.0, median: 110.2, cpu: 0.47, threads: 18 },
-  { relay: 'relay_tokio.rs', idle: 265.4, peak: 267.4, median: 267.4, cpu: 0.27, threads: 17 },
-  { relay: 'relay_std.rs', idle: 39.6, peak: 57.5, median: 48.5, cpu: 0.18, threads: 3002 },
-  { relay: 'relay_single.rs', idle: 3.1, peak: 67.5, median: 35.3, cpu: 0.15, threads: 1 },
-  { relay: 'relay_jw238.rs', idle: 261.5, peak: 263.6, median: 262.5, cpu: 0.15, threads: 1 },
+  { relay: 'Go 版', idle: 78.5, peak: 142.0, median: 110.2, cpu: 0.47, threads: 18 },
+  { relay: 'tokio 版', idle: 265.4, peak: 267.4, median: 267.4, cpu: 0.27, threads: 17 },
+  { relay: 'std 版', idle: 39.6, peak: 57.5, median: 48.5, cpu: 0.18, threads: 3002 },
+  { relay: '单线程版', idle: 3.1, peak: 67.5, median: 35.3, cpu: 0.15, threads: 1 },
+  { relay: '人定架构版', idle: 261.5, peak: 263.6, median: 262.5, cpu: 0.15, threads: 1 },
 ]
 
 export const bulk = [
-  { relay: 'relay.go', idle: 11.7, peak: 53.8, median: 39.1, cpu: 2.88, threads: 20 },
-  { relay: 'relay_tokio.rs', idle: 16.7, peak: 23.0, median: 23.0, cpu: 0.55, threads: 17 },
-  { relay: 'relay_std.rs', idle: 4.6, peak: 17.5, median: 17.5, cpu: 2.05, threads: 152 },
-  { relay: 'relay_single.rs', idle: 2.1, peak: 18.1, median: 18.1, cpu: 1.39, threads: 1 },
-  { relay: 'relay_jw238.rs', idle: 15.2, peak: 23.8, median: 23.8, cpu: 0.38, threads: 1 },
+  { relay: 'Go 版', idle: 11.7, peak: 53.8, median: 39.1, cpu: 2.88, threads: 20 },
+  { relay: 'tokio 版', idle: 16.7, peak: 23.0, median: 23.0, cpu: 0.55, threads: 17 },
+  { relay: 'std 版', idle: 4.6, peak: 17.5, median: 17.5, cpu: 2.05, threads: 152 },
+  { relay: '单线程版', idle: 2.1, peak: 18.1, median: 18.1, cpu: 1.39, threads: 1 },
+  { relay: '人定架构版', idle: 15.2, peak: 23.8, median: 23.8, cpu: 0.38, threads: 1 },
 ]
 
 export const columns = [
@@ -44,7 +44,7 @@ export function BenchTable({ rows }) {
       <tbody>
         {rows.map((r) => (
           <tr key={r.relay}>
-            <td><code>{r.relay}</code></td>
+            <td>{r.relay}</td>
             {columns.map(([key, , digits]) => <td key={key} style={{ textAlign: 'right' }}>{r[key].toFixed(digits)}</td>)}
           </tr>
         ))}
@@ -60,9 +60,9 @@ export function BarChart({ title, rows, metric, unit, digits }) {
       <figcaption style={{ fontWeight: 600, marginBottom: '0.5em' }}>{title}</figcaption>
       {rows.map((r) => (
         <div key={r.relay} style={{ display: 'flex', alignItems: 'center', gap: '0.75em', margin: '0.3em 0' }}>
-          <code style={{ flex: '0 0 9em' }}>{r.relay}</code>
+          <span style={{ flex: '0 0 12em' }}>{r.relay}</span>
           <div style={{ flex: 1 }}>
-            <div style={{ width: `${(100 * r[metric]) / max}%`, minWidth: '2px', height: '1.1em', borderRadius: '3px', background: r.relay === 'relay_jw238.rs' ? '#2f9e6e' : '#5b7fd6' }} />
+            <div style={{ width: `${(100 * r[metric]) / max}%`, minWidth: '2px', height: '1.1em', borderRadius: '3px', background: r.relay === '人定架构版' ? '#2f9e6e' : '#5b7fd6' }} />
           </div>
           <span style={{ flex: '0 0 6em', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{r[metric].toFixed(digits)} {unit}</span>
         </div>
@@ -71,9 +71,13 @@ export function BarChart({ title, rows, metric, unit, digits }) {
   )
 }
 
-# AI 设计的架构为什么烂
+# 你的 prompt 不是我的 prompt：人类专家的不可替代性
 
-我们有一个很简单的需求：**WebSocket 中转（relay）**。
+> AI 面对一个开放问题时，给出的是 popular solution，你骂它，它可以变得 general。但它永远无法找到 masterpiece。
+>
+> —— JW238
+
+这篇文章用一个很简单的需求，把这三层摆出来看：**WebSocket 中转（relay）**。
 
 ## 一、需求和四个 prompt
 
@@ -85,7 +89,7 @@ export function BarChart({ title, rows, metric, unit, digits }) {
 
 需求一句话就说完了。没有业务，没有历史包袱，两种语言都有成熟的 WebSocket 库。
 
-我同时开了四个 Claude Opus 5.5 子 agent，每个只拿到上面这段需求，加上一句指令：
+我同时开了四个 Claude Opus 5.5（`claude-opus-5-5`）子 agent，四个 prompt 用的是同一个模型，每个只拿到上面这段需求，加上一句指令：
 
 1. **Go**：“用 Go 实现这个 WebSocket 中转服务器。”
 2. **Rust + tokio**：“用 Rust 和 tokio 实现这个 WebSocket 中转服务器。”
@@ -94,42 +98,25 @@ export function BarChart({ title, rows, metric, unit, digits }) {
 
 prompt 的结尾都一样：把代码写到指定目录、确保能编译通过，最后给出完整源码并说明设计。除此之外没有任何提示，没有提“生命周期”，没有提架构。
 
-| prompt | 产物 | 用时 | 工具调用 | tokens | 有效行数 | 依赖 |
-| --- | --- | --- | --- | --- | --- | --- |
-| Go | `relay.go` | 129.5 s | 7 | 51,016 | 186 | gorilla/websocket |
-| Rust + tokio | `relay_tokio.rs` | 95.7 s | 6 | 47,859 | 146 | tokio、tokio-tungstenite |
-| Rust std | `relay_std.rs` | 157.2 s | 9 | 53,675 | 286 | 无（手写 SHA-1、握手、帧编解码） |
-| Rust 单线程 | `relay_single.rs` | 305.4 s | 6 | 72,635 | 541 | 无（同上，再加 `extern "C"` 直接调 `poll(2)`） |
+| prompt | 用时 | 工具调用 | tokens | 有效行数 | 依赖 |
+| --- | --- | --- | --- | --- | --- |
+| Go | 129.5 s | 7 | 51,016 | 186 | gorilla/websocket |
+| Rust + tokio | 95.7 s | 6 | 47,859 | 146 | tokio、tokio-tungstenite |
+| Rust std | 157.2 s | 9 | 53,675 | 286 | 无（手写 SHA-1、握手、帧编解码） |
+| Rust 单线程 | 305.4 s | 6 | 72,635 | 541 | 无（同上，再加 `extern "C"` 直接调 `poll(2)`） |
 
 （有效行数不含空行和注释。子 agent 运行在我的环境里，能读到我的全局 `CLAUDE.md`，里面有一些 Rust 代码风格要求，比如不用 `'static`、多用 `From`/`Into`。所以它们拿到的输入不只是 prompt 本身。）
 
-还有第五份：`relay_jw238.rs`。它也是 AI 写的，但架构是人定的：人先指出“这里底下是五个生命周期”“一个线程、每对连接一个 Future、两个方向乒乓交替、不许用 tokio”，AI 再照着写。
+这四个 prompt 对应前两层：
+
+- 第 1、2 个只指定了技术栈，AI 给出的是 **popular solution**。
+- 第 3、4 个是人的调优：拿掉 tokio、拿掉多线程，把 AI 推出社区默认写法，得到更通用的 **general solution**。
+
+还有第五份：人定架构版，对应第三层 **masterpiece solution**。它也是 AI 写的，但架构是人定的：人先指出“这里底下是五个生命周期”“一个线程、每对连接一个 Future、两个方向乒乓交替、不许用 tokio”，AI 再照着写。
 
 五份代码的完整源码都在文章目录的 `refs/` 下，测试脚本和压测脚本也在。
 
-## 二、先说结果：四份都是对的
-
-我给五份代码跑了同一组行为测试：
-
-![[refs/test.py]]
-
-| 版本 | A 断开后 B | A 在大厅里断开，B、C 再连上 | A 在配对前发的消息 | 双向各发 500 条 64KB，A 收完后断开，B 收到 A 的几条（5 轮） |
-| --- | --- | --- | --- | --- |
-| `relay.go` | 收到关闭帧 1001 | B、C 配对成功 | B 收到 | 500 ×5 |
-| `relay_tokio.rs` | 收到关闭帧（无状态码） | B、C 配对成功 | B 收到 | 500 ×5 |
-| `relay_std.rs` | 收到关闭帧 1001 | B、C 配对成功 | B 收到 | 500 ×5 |
-| `relay_single.rs` | 收到关闭帧 1001 | B、C 配对成功 | B 收到 | 500 ×5 |
-| `relay_jw238.rs` | 收到关闭帧（无状态码） | B、C 配对成功 | B 收到 | 500 ×5 |
-
-A 的断开方式分别用 FIN（正常关 TCP、不发关闭帧）和 RST（直接 abort）各跑了一遍，结果一样。
-
-全部通过。尤其是第二列：一个连接在“大厅”里等人的时候断开，这是最容易漏的地方，四个 agent 都想到了，也都处理了。
-
-所以这篇文章要说的“烂”，不是 AI 写不对。**它写得对，而且每一处边界都补上了。烂的是结构：同一个问题，它在四种约束下给出了四种完全不同的结构，每一种都是那个语言社区最常见的写法，每一种都把本该是一体的东西拆开，再用一堆机制拴回去。**
-
-要看清这一点，得先看清问题底下到底有什么。
-
-## 三、代码之下：五个生命周期
+## 二、代码之下：五个生命周期
 
 在需求里，看上去只有“两个连接”和“一次中转”。但底层其实是**五个不一样的生命周期**：
 
@@ -155,13 +142,21 @@ flow2                       |============================|
 
 需求里那句“任意一方断开，另一方也断开”，其实是把五个生命周期**收成了一个**：任何一个 `flow` 结束 ⇒ `pipe` 结束 ⇒ `rt1`、`rt2` 一起结束。它们同生共死。
 
-同生共死的东西，最自然的结构是放在一起。下面看四个 agent 把它们放在了哪里。
+同生共死的东西，最自然的结构是放在一起。
 
-## 四、Go：一对连接八个 goroutine
+## 三、代码解析
+
+下面逐份看：五个生命周期在每一份代码里落在了哪里。前四份的结构是 AI 自己定的，最后一份是人定的。
+
+### AI solution（一）Go：一对连接八个 goroutine
+
+> prompt 1：“用 Go 实现这个 WebSocket 中转服务器。”
+>
+> 模型：Claude Opus 5.5（`claude-opus-5-5`）子 agent。前面是第一节的需求原文，后面是统一的结尾要求。
 
 ![[refs/relay.go]]
 
-五个生命周期在 `relay.go` 里：
+五个生命周期在 Go 版里：
 
 - `rt1`、`rt2`：各是一个 `client`。每个 `client` 一创建就带两个 goroutine：`readLoop`（唯一的读者）和 `pingLoop`（心跳）。另外，每条连接的 HTTP handler goroutine 会一直阻塞到会话结束。
 - `pipe`：后到的那条连接的 handler 里的一次 `relay(peer, c)` 调用。
@@ -175,11 +170,15 @@ flow2                       |============================|
 
 **每个生命周期一个执行单元，再用一堆同步原语把它们拴回去。** 测试全过，但正确性分散在每一个原语里，任何一个写错，都是 goroutine 泄漏或者数据错乱，编译器一条都不会提醒你。
 
-## 五、tokio：三种任务，一个 `select!`
+### AI solution（二）tokio：三种任务，一个 `select!`
+
+> prompt 2：“用 Rust 和 tokio 实现这个 WebSocket 中转服务器。”
+>
+> 模型：Claude Opus 5.5（`claude-opus-5-5`）子 agent。前面是第一节的需求原文，后面是统一的结尾要求。
 
 ![[refs/relay_tokio.rs]]
 
-五个生命周期在 `relay_tokio.rs` 里：
+五个生命周期在 tokio 版里：
 
 - `rt1`、`rt2`：`Ws` 这个值。握手由每条连接一个任务完成，然后通过 mpsc channel 交给全局唯一的 `Matchmaker` 任务。
 - 大厅：`Matchmaker` 独占一个等待槽。槽里有人时，它用 `select!` 同时等“新连接到来”和“等待者自己的动静”。
@@ -194,7 +193,15 @@ flow2                       |============================|
 
 另外，`tokio::spawn` 要求任务是 `'static` 的，所以 `Session` 不能借用外面的任何东西，只能把连接整个 move 进去。这次需求简单，没什么要借用的；一旦中转时要碰外面的计数器、配置或日志句柄，就得改成 `Arc`。
 
-## 六、std：一对连接三个线程
+Go 和 tokio 这两份就是 popular solution：去搜“Go WebSocket relay”“tokio WebSocket relay”，最先看到的就是这两种结构。它们能用，也写得不错，但结构是框架给的，不是问题给的。
+
+### AI solution（三）std：一对连接三个线程
+
+> prompt 3：“用 Rust 实现这个 WebSocket 中转服务器，只能用标准库，不允许用 tokio。”
+>
+> 模型：Claude Opus 5.5（`claude-opus-5-5`）子 agent。前面是第一节的需求原文，后面是统一的结尾要求。
+
+接下来是人的调优。第 3、4 个 prompt 不再只说技术栈，而是加约束：不许用 tokio，再进一步，完全单线程。约束把 AI 从社区默认写法里推出来，它只能自己处理协议、自己调度连接。
 
 ![[refs/relay_std.rs]]
 
@@ -214,7 +221,11 @@ flow2                       |============================|
 
 `peek` 探活也有盲区：如果 A 先发了一条消息再断开，`peek` 看到的是那条消息，看不到断开，A 会被当成活着。这次测试里 A 在大厅里没发消息，所以没有暴露。
 
-## 七、单线程：541 行的状态机
+### AI solution（四）单线程：541 行的状态机
+
+> prompt 4：“用 Rust 手动实现这个 WebSocket 中转服务器，完全单线程，不允许用 tokio。”
+>
+> 模型：Claude Opus 5.5（`claude-opus-5-5`）子 agent。前面是第一节的需求原文，后面是统一的结尾要求。
 
 ![[refs/relay_single.rs]]
 
@@ -234,11 +245,13 @@ flow2                       |============================|
 
 结束也分成了三条路：`kill`（socket 坏了，立刻释放，通知对端）、`close_pair`（收到 Close 或协议错误，两边都进入 `Closing`）、`release`（真正释放槽位）。哪条路在什么时候清 `waiting`、清 `peer`、清 `held`，全靠人工保证每条路都写对。
 
-它是对的，只有一个线程，也没有 tokio。但需求里“五个生命周期同生共死”这件事，在这 541 行里找不到任何一处直接的表达。
+它是对的，只有一个线程，也没有 tokio。这就是 general solution：零依赖，一个线程，连接数从 2 涨到 2000 结构都不用变，换到任何有 `poll(2)` 的系统上都能跑，泛化性比前面几份都强。
 
-## 八、人定架构的版本：`relay_jw238.rs`
+但需求里“五个生命周期同生共死”这件事，在这 541 行里找不到任何一处直接的表达。**调优能改变 AI 用什么写，改变不了 AI 怎么拆。**
 
-同样是一个线程、一个 `poll(2)`、不用 tokio。区别在于，人先告诉 AI：底下有五个生命周期，它们同生共死，所以每对连接只该有一个执行单元。
+### Human solution：人定架构版
+
+同样是一个线程、一个 `poll(2)`、不用 tokio。区别在于，人先告诉 AI：底下有五个生命周期，它们同生共死，所以每对连接只该有一个执行单元。这一步不是调优，不是再加一条技术约束，而是一个架构判断。
 
 ![[refs/relay_jw238.rs]]
 
@@ -260,20 +273,42 @@ fn relay<'pipe, 'r, 'rt1: 'pipe, 'rt2: 'pipe, 'flow1: 'pipe, 'flow2: 'pipe>(
 - `'rt1`：A 这条连接。由先到的那个任务持有，从握手开始，**在大厅里等的那一段也在**。等待时它只向 `poll(2)` 要 `POLLRDHUP`：对端断开会被发现，A 发来的消息则原样留在 socket 里，等配对之后由 `flow1` 转给 B。不用读出来，所以不需要 `pending` 缓冲，也不需要 1024 条的上限。
 - `'rt2`：B 这条连接。B 的任务握手完成后，把连接放进 A 的信箱（`Mailbox`），唤醒 A，然后退出。
 - `'flow1`、`'flow2`：两个 `Flow` 枚举。**不是任务，不是线程，不是 channel，只是两个状态**，由 A 的任务在配对时创建。
-- `'pipe`：`relay` 返回的 Future。`'rt1: 'pipe` 这四个约束，就是第三节那条唯一的硬约束，现在由编译器检查。
+- `'pipe`：`relay` 返回的 Future。`'rt1: 'pipe` 这四个约束，就是第二节那条唯一的硬约束，现在由编译器检查。
 - `'r`：事件循环本身。它比上面五个都长，不属于这对连接。
 
 把 `'flow` 和 `'pipe` 分开，是这份代码最关键的决定。`relay` 只是**借用**两个 `Flow`，所以 `pipe` 结束之后，`flow` 还活着：它手里如果还攥着一条没写出去的消息，调用方可以看见，并在关闭连接之前把它交出去（`Flow::drain`）。tokio 版本里那个“drop 即丢弃”的时机，在这里不存在。
 
-和 `relay_single.rs` 对比：同样是单线程，一个把生命周期抹成 `usize`，一个把生命周期写进类型。前者的正确性靠注释里的规则和三条清理路径，后者的正确性靠借用检查器。
+和单线程版对比：同样是单线程，一个把生命周期抹成 `usize`，一个把生命周期写进类型。前者的正确性靠注释里的规则和三条清理路径，后者的正确性靠借用检查器。
 
 这份代码在 Go 里写不出来。Go 的连接只有阻塞式的 `Read`，一个 goroutine 阻塞在 A 上，就没法同时等 B，所以每一对连接至少要两个 goroutine。**Go 替你做了“一个连接一个执行单元”这个封装决定，代价是你没法再把两个连接放进同一个执行单元。**
 
-## 九、压测：内存和 CPU
+## 四、代码分析
 
-下面的脚本把五个版本都编译成 release，启动服务器，用 Python 的 `websockets` 起一批客户端，两两配对后同时双向互发，期间每 10ms 从 `/proc` 采一次服务器进程的 RSS，并记录整段流量消耗的 CPU 时间。
+解析看的是结构，分析看的是行为和代价：先跑正确性测试，再跑压测。
 
-![[refs/bench.py]]
+### 正确性：四份都对
+
+我给五份代码跑了同一组行为测试：
+
+![[refs/test.py]]
+
+| 版本 | A 断开后 B | A 在大厅里断开，B、C 再连上 | A 在配对前发的消息 | 双向各发 500 条 64KB，A 收完后断开，B 收到 A 的几条（5 轮） |
+| --- | --- | --- | --- | --- |
+| Go 版 | 收到关闭帧 1001 | B、C 配对成功 | B 收到 | 500 ×5 |
+| tokio 版 | 收到关闭帧（无状态码） | B、C 配对成功 | B 收到 | 500 ×5 |
+| std 版 | 收到关闭帧 1001 | B、C 配对成功 | B 收到 | 500 ×5 |
+| 单线程版 | 收到关闭帧 1001 | B、C 配对成功 | B 收到 | 500 ×5 |
+| 人定架构版 | 收到关闭帧（无状态码） | B、C 配对成功 | B 收到 | 500 ×5 |
+
+A 的断开方式分别用 FIN（正常关 TCP、不发关闭帧）和 RST（直接 abort）各跑了一遍，结果一样。
+
+全部通过。尤其是第二列：一个连接在“大厅”里等人的时候断开，这是最容易漏的地方，四个 agent 都想到了，也都处理了。
+
+所以这篇文章要说的“烂”，不是 AI 写不对。**它写得对，而且每一处边界都补上了。烂在它给出的是 popular solution，烂的是结构：同一个问题，它在四种约束下给出了四种完全不同的结构，每一种都是那个语言社区最常见的写法，每一种都把本该是一体的东西拆开，再用一堆机制拴回去。**
+
+### 压测：内存和 CPU
+
+脚本把五个版本都编译成 release，启动服务器，用 Python 的 `websockets` 起一批客户端，两两配对后同时双向互发，期间每 10ms 从 `/proc` 采一次服务器进程的 RSS，并记录整段流量消耗的 CPU 时间。
 
 在一台 16 核的 Linux 机器上跑一次的结果（release 构建；每轮都确认所有消息收齐）：
 
@@ -295,24 +330,24 @@ fn relay<'pipe, 'r, 'rt1: 'pipe, 'rt2: 'pipe, 'flow1: 'pipe, 'flow2: 'pipe>(
 
 怎么读这两张表：
 
-- **CPU 看“CPU 秒”，不看百分比。** 每个场景的工作量是固定的，瓶颈大多在 Python 客户端；同样的活儿，服务器花了多少 CPU 时间才是可比的。大流量下 `relay_jw238.rs` 最少：0.38 秒，`relay_tokio.rs` 0.55 秒，`relay.go` 2.88 秒。
-- **`relay_single.rs` 的 1.39 秒不是架构的锅。** 它是唯一一个墙钟时间翻倍的版本：单核跑满了 100%。我用 `perf` 看了一下，56% 的时间花在 `pump` 里逐字节地去掩码（`zip(mask.iter().cycle())` 没有被向量化）。这是手写协议的细节，换成按字去掩码就能省下来。同样手写协议的 `relay_std.rs` 也是这个循环，只是被 16 个核分摊了。
-- **`relay.go` 的 2.88 秒我没有 profile**，不下结论。它每条消息要经过 `ReadMessage` 整条读出、经 channel 交给另一个 goroutine、再 `WriteMessage`，大概和这条路径有关。
-- **线程数是结构的直接后果。** `relay_std.rs` 一对连接 3 个线程，1000 对就是 3002 个；两个单线程版本始终是 1。
-- **连接多时，tungstenite 系的空闲内存主要是库的默认配置。** tungstenite 默认给每条连接分配 128KiB 的读缓冲，2000 条连接就是 250MiB，所以 `relay_tokio.rs` 和 `relay_jw238.rs` 都在 260MiB 上下。手写协议的两个版本没有这个缓冲。这一行比较的是默认配置，不是架构。
+- **CPU 看“CPU 秒”，不看百分比。** 每个场景的工作量是固定的，瓶颈大多在 Python 客户端；同样的活儿，服务器花了多少 CPU 时间才是可比的。大流量下人定架构版最少：0.38 秒，tokio 版 0.55 秒，Go 版 2.88 秒。
+- **单线程版的 1.39 秒不是架构的锅。** 它是唯一一个墙钟时间翻倍的版本：单核跑满了 100%。我用 `perf` 看了一下，56% 的时间花在 `pump` 里逐字节地去掩码（`zip(mask.iter().cycle())` 没有被向量化）。这是手写协议的细节，换成按字去掩码就能省下来。同样手写协议的 std 版也是这个循环，只是被 16 个核分摊了。
+- **Go 版的 2.88 秒我没有 profile**，不下结论。它每条消息要经过 `ReadMessage` 整条读出、经 channel 交给另一个 goroutine、再 `WriteMessage`，大概和这条路径有关。
+- **线程数是结构的直接后果。** std 版一对连接 3 个线程，1000 对就是 3002 个；两个单线程版本始终是 1。
+- **连接多时，tungstenite 系的空闲内存主要是库的默认配置。** tungstenite 默认给每条连接分配 128KiB 的读缓冲，2000 条连接就是 250MiB，所以 tokio 版和人定架构版都在 260MiB 上下。手写协议的两个版本没有这个缓冲。这一行比较的是默认配置，不是架构。
 - 每个场景只跑了一次，连接多那组每个版本只跑了 0.3 秒左右，数字有波动，看量级就好。
 
-## 十、AI 设计的架构为什么烂
+## 五、架构债如何产生
 
 把五份代码放在一起：
 
-| 版本 | 每对连接的执行单元 | 把生命周期拴在一起的机制 | 为了拆开而发明的规则 |
-| --- | --- | --- | --- |
-| `relay.go` | 8 个 goroutine | 8 个 channel、`Mutex`、`Once`、`WaitGroup` | `paired` 标志 |
-| `relay_tokio.rs` | 1 个 `Session` 任务（外加握手任务和全局 `Matchmaker`） | mpsc、`select!`、`split` | 等待期消息缓存，上限 1024 条 |
-| `relay_std.rs` | 3 个线程（外加握手线程和 `Lobby` 线程） | mpsc、写锁、`shutdown(Both)` | 每秒一次 `peek` 探活 |
-| `relay_single.rs` | 0（全在一个 slab 里） | `peer: Option<usize>`、三条清理路径 | 每轮最后才 accept |
-| `relay_jw238.rs` | 1 个 Future | 借用：`'rt1: 'pipe` 等四个约束 | 无 |
+| 版本 | 层次 | 每对连接的执行单元 | 把生命周期拴在一起的机制 | 为了拆开而发明的规则 |
+| --- | --- | --- | --- | --- |
+| Go 版 | popular | 8 个 goroutine | 8 个 channel、`Mutex`、`Once`、`WaitGroup` | `paired` 标志 |
+| tokio 版 | popular | 1 个 `Session` 任务（外加握手任务和全局 `Matchmaker`） | mpsc、`select!`、`split` | 等待期消息缓存，上限 1024 条 |
+| std 版 | 调优 | 3 个线程（外加握手线程和 `Lobby` 线程） | mpsc、写锁、`shutdown(Both)` | 每秒一次 `peek` 探活 |
+| 单线程版 | general | 0（全在一个 slab 里） | `peer: Option<usize>`、三条清理路径 | 每轮最后才 accept |
+| 人定架构版 | masterpiece | 1 个 Future | 借用：`'rt1: 'pipe` 等四个约束 | 无 |
 
 四个 agent 都做到了 prompt 要求的一切，测试全过，大厅里的断线、配对前的消息、断开时不丢消息，全都处理了。这比我预想的好。
 
@@ -323,8 +358,26 @@ fn relay<'pipe, 'r, 'rt1: 'pipe, 'rt2: 'pipe, 'flow1: 'pipe, 'flow2: 'pipe>(
 - 说只能用 std，就是一个方向一个线程，再加锁；
 - 说完全单线程，就是一个事件循环加一个 slab，生命周期变成下标。
 
-每一种都是那个约束下最常见的写法。每一种都先把五个本该一体的生命周期**拆开**，分进不同的执行单元，或者抹平成整数，然后再用同步原语、缓冲上限、探活、清理路径把它们**拴回去**。每发现一个边界情况，就打一个补丁：`paired` 标志、1024 条上限、每秒一次 `peek`、最后才 accept。每一个补丁都是对的，合在一起，就是架构。
+每一种都是那个约束下最常见的写法。每一种都先把五个本该一体的生命周期**拆开**，分进不同的执行单元，或者抹平成整数，然后再用同步原语、缓冲上限、探活、清理路径把它们**拴回去**。每发现一个边界情况，就打一个补丁。每一个补丁都是对的，合在一起，就是架构债。
 
-第四个 prompt 最能说明问题。“完全单线程”是一个技术约束，AI 满足了它。但“单线程”和“每对连接只有一个执行单元、五个生命周期写进同一个签名”之间，还隔着一个判断：**这五个东西本来就是一体的。** 这个判断不在 prompt 里，AI 也没有自己做出来。`relay_jw238.rs` 和 `relay_single.rs` 的全部差别，就是这一个判断。
+### AI 不会告诉你的
 
-AI 能写出每一种封装。**AI 无法决策的是：哪些东西本来就是一体的。**
+四个 agent 交回来的设计说明都写得很认真：用了哪些并发单元、怎么配对、断开时怎么清理，一条不落。但下面这些，四份说明里一句都没有：
+
+1. **这个问题底下有五个生命周期。** 需求里没写，代码里也看不出来。它们是从“连接什么时候开始、什么时候结束、谁等谁”里推出来的。没有一个 agent 推过。
+2. **它们同生共死，所以应该放进同一个结构。** “任意一方断开，另一方也断开”是一个产品决定，它把五个生命周期收成了一个。这个决定直接规定了结构该长什么样，但没有一个 agent 从这里出发去设计。
+3. **补丁是拆开的代价，不是功能。** Go 版的 `paired` 标志、tokio 版的 1024 条上限、std 版的每秒一次 `peek`、单线程版的“每轮最后才 accept”，在各自的说明里都被当成考虑周到的设计来介绍。没有一个 agent 说：这些规则之所以存在，是因为前面把本该一体的东西拆开了。
+4. **还有别的结构可以选。** 说 Go 就是 goroutine 加 channel，说 tokio 就是 spawn 加 `select!`。四份说明里没有一份提到“也可以每对连接只用一个执行单元”，更没有比较过。
+5. **结构里埋着的风险。** tokio 版的说明写的是“另一个方向的 future 被 drop，不会遗留任何协程”。这句话是对的，但它没说另一半：被 drop 的那个 future 手里如果攥着一条刚读出来、还没写出去的消息，这条消息也跟着没了。
+
+这些不是 AI 答错了，是**没有人问**。prompt 说“实现”，它就实现；说“不许用 tokio”，它就不用；说“完全单线程”，它就只开一个线程。它把每一个被问到的问题都回答得很好，但不会主动去问一个没被问到的问题：这个问题底下到底有几个东西，哪几个是一体的。
+
+**AI 是工具，工具不会主动思考。** 它不会停下来说“等一下，这个需求的结构应该是这样的”，它会直接给你那个技术栈下最常见的答案，并且把答案的每一个边界都补得很好。补得越好，你越不容易发现：结构本身就是一笔债。
+
+第四个 prompt 最能说明问题。“完全单线程”是人加的技术约束，AI 满足了它，交出了 general solution。但“单线程”和“每对连接只有一个执行单元、五个生命周期写进同一个签名”之间，还隔着一个判断：**这五个东西本来就是一体的。** 这个判断不在 prompt 里，AI 也不会自己去做。人定架构版和单线程版的全部差别，就是这一个判断，而这个判断是人做的。
+
+> AI 面对一个开放问题时，给出的是 popular solution，你骂它，它可以变得 general。但它永远无法找到 masterpiece。
+>
+> —— JW238
+
+AI 能写出每一种封装。**AI 不会告诉你的是：哪些东西本来就是一体的。**

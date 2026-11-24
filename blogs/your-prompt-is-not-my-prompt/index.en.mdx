@@ -1,27 +1,27 @@
 ---
-title: Why AI-designed architecture is bad
+title: "Your prompt is not my prompt: why human experts are irreplaceable"
 date: 2026-11-24
 authors: [jabberwocky238]
 tags: [architecture, ai, golang, rust, websocket]
-summary: One WebSocket relay requirement, four prompts, four AI agents. All four programs pass the tests, and each has a different structure. Every one first takes apart five lifetimes that live and die together, then ties them back with a pile of mechanisms.
+summary: Faced with an open problem AI gives the popular solution. Human tuning can turn it into a general solution that generalizes better. Only a human who thinks in architecture finds the masterpiece solution. One WebSocket relay, four AI agents and one human-designed version show all three.
 lang: en
-status: draft
+status: staged
 ---
 
 export const many = [
-  { relay: 'relay.go', idle: 78.5, peak: 142.0, median: 110.2, cpu: 0.47, threads: 18 },
-  { relay: 'relay_tokio.rs', idle: 265.4, peak: 267.4, median: 267.4, cpu: 0.27, threads: 17 },
-  { relay: 'relay_std.rs', idle: 39.6, peak: 57.5, median: 48.5, cpu: 0.18, threads: 3002 },
-  { relay: 'relay_single.rs', idle: 3.1, peak: 67.5, median: 35.3, cpu: 0.15, threads: 1 },
-  { relay: 'relay_jw238.rs', idle: 261.5, peak: 263.6, median: 262.5, cpu: 0.15, threads: 1 },
+  { relay: 'Go version', idle: 78.5, peak: 142.0, median: 110.2, cpu: 0.47, threads: 18 },
+  { relay: 'tokio version', idle: 265.4, peak: 267.4, median: 267.4, cpu: 0.27, threads: 17 },
+  { relay: 'std version', idle: 39.6, peak: 57.5, median: 48.5, cpu: 0.18, threads: 3002 },
+  { relay: 'single-threaded version', idle: 3.1, peak: 67.5, median: 35.3, cpu: 0.15, threads: 1 },
+  { relay: 'human-designed version', idle: 261.5, peak: 263.6, median: 262.5, cpu: 0.15, threads: 1 },
 ]
 
 export const bulk = [
-  { relay: 'relay.go', idle: 11.7, peak: 53.8, median: 39.1, cpu: 2.88, threads: 20 },
-  { relay: 'relay_tokio.rs', idle: 16.7, peak: 23.0, median: 23.0, cpu: 0.55, threads: 17 },
-  { relay: 'relay_std.rs', idle: 4.6, peak: 17.5, median: 17.5, cpu: 2.05, threads: 152 },
-  { relay: 'relay_single.rs', idle: 2.1, peak: 18.1, median: 18.1, cpu: 1.39, threads: 1 },
-  { relay: 'relay_jw238.rs', idle: 15.2, peak: 23.8, median: 23.8, cpu: 0.38, threads: 1 },
+  { relay: 'Go version', idle: 11.7, peak: 53.8, median: 39.1, cpu: 2.88, threads: 20 },
+  { relay: 'tokio version', idle: 16.7, peak: 23.0, median: 23.0, cpu: 0.55, threads: 17 },
+  { relay: 'std version', idle: 4.6, peak: 17.5, median: 17.5, cpu: 2.05, threads: 152 },
+  { relay: 'single-threaded version', idle: 2.1, peak: 18.1, median: 18.1, cpu: 1.39, threads: 1 },
+  { relay: 'human-designed version', idle: 15.2, peak: 23.8, median: 23.8, cpu: 0.38, threads: 1 },
 ]
 
 export const columns = [
@@ -44,7 +44,7 @@ export function BenchTable({ rows }) {
       <tbody>
         {rows.map((r) => (
           <tr key={r.relay}>
-            <td><code>{r.relay}</code></td>
+            <td>{r.relay}</td>
             {columns.map(([key, , digits]) => <td key={key} style={{ textAlign: 'right' }}>{r[key].toFixed(digits)}</td>)}
           </tr>
         ))}
@@ -60,9 +60,9 @@ export function BarChart({ title, rows, metric, unit, digits }) {
       <figcaption style={{ fontWeight: 600, marginBottom: '0.5em' }}>{title}</figcaption>
       {rows.map((r) => (
         <div key={r.relay} style={{ display: 'flex', alignItems: 'center', gap: '0.75em', margin: '0.3em 0' }}>
-          <code style={{ flex: '0 0 9em' }}>{r.relay}</code>
+          <span style={{ flex: '0 0 12em' }}>{r.relay}</span>
           <div style={{ flex: 1 }}>
-            <div style={{ width: `${(100 * r[metric]) / max}%`, minWidth: '2px', height: '1.1em', borderRadius: '3px', background: r.relay === 'relay_jw238.rs' ? '#2f9e6e' : '#5b7fd6' }} />
+            <div style={{ width: `${(100 * r[metric]) / max}%`, minWidth: '2px', height: '1.1em', borderRadius: '3px', background: r.relay === 'human-designed version' ? '#2f9e6e' : '#5b7fd6' }} />
           </div>
           <span style={{ flex: '0 0 6em', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{r[metric].toFixed(digits)} {unit}</span>
         </div>
@@ -71,9 +71,13 @@ export function BarChart({ title, rows, metric, unit, digits }) {
   )
 }
 
-# Why AI-designed architecture is bad
+# Your prompt is not my prompt: why human experts are irreplaceable
 
-We have a very simple requirement: **a WebSocket relay**.
+> Faced with an open problem, AI gives you the popular solution. Scold it, and it can become general. But it will never find the masterpiece.
+>
+> — JW238
+
+This post lays out those three levels with one very simple requirement: **a WebSocket relay**.
 
 ## 1. The requirement and four prompts
 
@@ -85,7 +89,7 @@ Two clients connect to the same server over WebSocket. The server pairs them and
 
 That is the whole requirement. No business logic, no legacy, and both languages have mature WebSocket libraries.
 
-I started four Claude Opus 5.5 subagents at the same time. Each got only the requirement above plus one instruction:
+I started four Claude Opus 5.5 (`claude-opus-5-5`) subagents at the same time, the same model for all four prompts. Each got only the requirement above plus one instruction:
 
 1. **Go**: "Implement this WebSocket relay server in Go."
 2. **Rust + tokio**: "Implement this WebSocket relay server in Rust with tokio."
@@ -94,42 +98,25 @@ I started four Claude Opus 5.5 subagents at the same time. Each got only the req
 
 All four prompts ended the same way: write the code to a given folder, make sure it compiles, and reply with the full source and an explanation of the design. Nothing else: no mention of lifetimes, no hint about architecture. (The prompts were in Chinese; the lines above are translations.)
 
-| Prompt | Output | Time | Tool calls | Tokens | Lines of code | Dependencies |
-| --- | --- | --- | --- | --- | --- | --- |
-| Go | `relay.go` | 129.5 s | 7 | 51,016 | 186 | gorilla/websocket |
-| Rust + tokio | `relay_tokio.rs` | 95.7 s | 6 | 47,859 | 146 | tokio, tokio-tungstenite |
-| Rust std | `relay_std.rs` | 157.2 s | 9 | 53,675 | 286 | none (hand-written SHA-1, handshake, framing) |
-| Rust single-threaded | `relay_single.rs` | 305.4 s | 6 | 72,635 | 541 | none (same, plus `extern "C"` straight into `poll(2)`) |
+| Prompt | Time | Tool calls | Tokens | Lines of code | Dependencies |
+| --- | --- | --- | --- | --- | --- |
+| Go | 129.5 s | 7 | 51,016 | 186 | gorilla/websocket |
+| Rust + tokio | 95.7 s | 6 | 47,859 | 146 | tokio, tokio-tungstenite |
+| Rust std | 157.2 s | 9 | 53,675 | 286 | none (hand-written SHA-1, handshake, framing) |
+| Rust single-threaded | 305.4 s | 6 | 72,635 | 541 | none (same, plus `extern "C"` straight into `poll(2)`) |
 
 (Lines of code exclude blank lines and comments. The subagents ran in my environment and could read my global `CLAUDE.md`, which has some Rust style rules such as "no `'static`" and "prefer `From`/`Into`". So their input was not just the prompt.)
 
-There is a fifth one: `relay_jw238.rs`. AI wrote it too, but a human set the architecture first: "there are five lifetimes underneath", "one thread, one Future per pair, the two directions take turns, no tokio". Then AI wrote it to that design.
+The four prompts cover the first two levels:
+
+- Prompts 1 and 2 only name a stack, and AI gives the **popular solution**.
+- Prompts 3 and 4 are human tuning: take away tokio, take away threads, and push AI out of the community default toward a more **general solution**.
+
+There is a fifth one, the human-designed version, for the third level, the **masterpiece solution**. AI wrote it too, but a human set the architecture first: "there are five lifetimes underneath", "one thread, one Future per pair, the two directions take turns, no tokio". Then AI wrote it to that design.
 
 The full sources of all five, the test script and the benchmark script are in the post's `refs/` folder.
 
-## 2. The result first: all four are correct
-
-I ran the same behaviour tests against all five:
-
-![[refs/test.py]]
-
-| Relay | B after A drops | A drops in the lobby, then B and C connect | Message A sent before pairing | Both send 500 × 64KB, A drops after receiving all; how many of A's does B get (5 rounds) |
-| --- | --- | --- | --- | --- |
-| `relay.go` | close frame 1001 | B and C paired | B gets it | 500 ×5 |
-| `relay_tokio.rs` | close frame (no status code) | B and C paired | B gets it | 500 ×5 |
-| `relay_std.rs` | close frame 1001 | B and C paired | B gets it | 500 ×5 |
-| `relay_single.rs` | close frame 1001 | B and C paired | B gets it | 500 ×5 |
-| `relay_jw238.rs` | close frame (no status code) | B and C paired | B gets it | 500 ×5 |
-
-A dropped its connection once with a FIN (TCP closed normally, no close frame) and once with an RST (abort). Same results.
-
-Everything passed. Look at the second column in particular: a connection that drops while waiting in the "lobby" is the easiest case to miss, and all four agents thought of it and handled it.
-
-So the "bad" in this post is not that AI gets it wrong. **It gets it right, and it patches every edge. What is bad is the structure: for the same problem it produced four completely different structures under four constraints. Each is the most common pattern in its community, and each takes apart things that belong together, then ties them back with a pile of mechanisms.**
-
-To see that, we first need to see what is underneath the problem.
-
-## 3. Under the code: five lifetimes
+## 2. Under the code: five lifetimes
 
 In the requirement there seem to be only "two connections" and "one relay". Underneath, there are **five different lifetimes**:
 
@@ -155,13 +142,21 @@ There is exactly one hard constraint between them: `flow1` and `flow2` lie insid
 
 The line "when either side goes away, the other is disconnected too" **folds the five lifetimes into one**: any `flow` ends ⇒ `pipe` ends ⇒ `rt1` and `rt2` end together. They live and die together.
 
-Things that live and die together most naturally sit in one structure. Let's see where the four agents put them.
+Things that live and die together most naturally sit in one structure.
 
-## 4. Go: eight goroutines per pair
+## 3. Reading the code
+
+One by one: where do the five lifetimes end up in each program? AI chose the structure of the first four; a human chose the last.
+
+### AI solution 1. Go: eight goroutines per pair
+
+> Prompt 1: "Implement this WebSocket relay server in Go."
+>
+> Model: a Claude Opus 5.5 (`claude-opus-5-5`) subagent. Preceded by the requirement from section 1 and followed by the common closing instructions.
 
 ![[refs/relay.go]]
 
-The five lifetimes in `relay.go`:
+The five lifetimes in the Go version:
 
 - `rt1`, `rt2`: one `client` each. Every `client` starts two goroutines as soon as it is created: `readLoop` (the only reader) and `pingLoop` (keepalive). On top of that, each connection's HTTP handler goroutine stays blocked until the session ends.
 - `pipe`: one call to `relay(peer, c)` inside the handler of the connection that arrived second.
@@ -175,11 +170,15 @@ The most telling piece is the `paired` field. The waiter disconnecting and the n
 
 **One execution unit per lifetime, then a pile of synchronization primitives to tie them back together.** The tests pass, but correctness is spread over every primitive. Get any one wrong and you leak goroutines or garble data, and the compiler won't warn you about any of it.
 
-## 5. tokio: three kinds of tasks and one `select!`
+### AI solution 2. tokio: three kinds of tasks and one `select!`
+
+> Prompt 2: "Implement this WebSocket relay server in Rust with tokio."
+>
+> Model: a Claude Opus 5.5 (`claude-opus-5-5`) subagent. Preceded by the requirement from section 1 and followed by the common closing instructions.
 
 ![[refs/relay_tokio.rs]]
 
-The five lifetimes in `relay_tokio.rs`:
+The five lifetimes in the tokio version:
 
 - `rt1`, `rt2`: the `Ws` value. A per-connection task does the handshake, then hands it over an mpsc channel to the single global `Matchmaker` task.
 - The lobby: `Matchmaker` owns the waiting slot. When someone is waiting, it uses `select!` to wait for "a new connection arrives" and "the waiter does something" at the same time.
@@ -194,7 +193,15 @@ There is also a problem the tests did not hit but the structure allows: when `se
 
 And `tokio::spawn` requires the task to be `'static`, so `Session` can borrow nothing from outside and has to take the connections by move. The requirement is simple enough that nothing needs borrowing; the moment the relay has to touch an outside counter, config or log handle, it becomes `Arc`.
 
-## 6. std: three threads per pair
+Go and tokio are the popular solution: search for "Go WebSocket relay" or "tokio WebSocket relay" and these are the two structures you find first. They work and they are well written, but the structure comes from the framework, not from the problem.
+
+### AI solution 3. std: three threads per pair
+
+> Prompt 3: "Implement this WebSocket relay server in Rust using only the standard library. No tokio."
+>
+> Model: a Claude Opus 5.5 (`claude-opus-5-5`) subagent. Preceded by the requirement from section 1 and followed by the common closing instructions.
+
+Next comes human tuning. Prompts 3 and 4 no longer just name a stack; they add constraints: no tokio, and then fully single-threaded. The constraints push AI out of the community default, so it has to handle the protocol and schedule the connections itself.
 
 ![[refs/relay_std.rs]]
 
@@ -214,7 +221,11 @@ Two details are again by-products of taking things apart:
 
 The `peek` probe has a blind spot too: if A sends a message and then disconnects, `peek` sees the message, not the disconnect, and A looks alive. A sent nothing in the lobby test, so it didn't show.
 
-## 7. Single-threaded: a 541-line state machine
+### AI solution 4. Single-threaded: a 541-line state machine
+
+> Prompt 4: "Implement this WebSocket relay server in Rust by hand, fully single-threaded. No tokio."
+>
+> Model: a Claude Opus 5.5 (`claude-opus-5-5`) subagent. Preceded by the requirement from section 1 and followed by the common closing instructions.
 
 ![[refs/relay_single.rs]]
 
@@ -234,11 +245,13 @@ The lifetimes were flattened into integer indices. The compiler cannot know whet
 
 Ending is split into three paths: `kill` (the socket broke; free it now and tell the peer), `close_pair` (a Close frame or a protocol error; both sides go to `Closing`), and `release` (actually free the slot). Which path clears `waiting`, `peer` and `held`, and when, depends entirely on every path being written correctly by hand.
 
-It is correct, it has one thread, and it doesn't use tokio. But nowhere in those 541 lines is "these five lifetimes live and die together" stated directly.
+It is correct, it has one thread, and it doesn't use tokio. This is the general solution: no dependencies, one thread, the same structure from 2 connections to 2000, and it runs on any system with `poll(2)`. It generalizes better than any of the previous ones.
 
-## 8. The human-designed one: `relay_jw238.rs`
+But nowhere in those 541 lines is "these five lifetimes live and die together" stated directly. **Tuning changes what AI writes with; it does not change how AI takes the problem apart.**
 
-Also one thread, one `poll(2)`, no tokio. The difference is that a human told AI first: there are five lifetimes underneath, they live and die together, so each pair should have exactly one execution unit.
+### Human solution: the human-designed version
+
+Also one thread, one `poll(2)`, no tokio. The difference is that a human told AI first: there are five lifetimes underneath, they live and die together, so each pair should have exactly one execution unit. That step is not tuning and not one more technical constraint: it is an architectural judgement.
 
 ![[refs/relay_jw238.rs]]
 
@@ -260,16 +273,40 @@ fn relay<'pipe, 'r, 'rt1: 'pipe, 'rt2: 'pipe, 'flow1: 'pipe, 'flow2: 'pipe>(
 - `'rt1`: connection A. Owned by the task of the first arrival, from the handshake on, **including the time spent waiting in the lobby**. While waiting it only asks `poll(2)` for `POLLRDHUP`: a hang-up is noticed, and whatever A sends stays in the socket until `flow1` relays it to B after pairing. Nothing has to be read, so there is no `pending` buffer and no 1024-message limit.
 - `'rt2`: connection B. B's task finishes its handshake, drops the connection into A's `Mailbox`, wakes A and exits.
 - `'flow1`, `'flow2`: two `Flow` enums. **Not tasks, not threads, not channels: just two states**, created by A's task at pairing time.
-- `'pipe`: the Future returned by `relay`. The four bounds `'rt1: 'pipe` and so on are the one hard constraint from section 3, now checked by the compiler.
+- `'pipe`: the Future returned by `relay`. The four bounds `'rt1: 'pipe` and so on are the one hard constraint from section 2, now checked by the compiler.
 - `'r`: the event loop itself. It outlives all five and does not belong to the pair.
 
 Separating `'flow` from `'pipe` is the key decision. `relay` only **borrows** the two `Flow`s, so they are still alive after `pipe` ends: if one still holds an unflushed message, the caller can see it and deliver it before closing the connections (`Flow::drain`). The "drop means discard" moment from the tokio version does not exist here.
 
-Compare it with `relay_single.rs`: both single-threaded, but one flattens the lifetimes into `usize`, the other writes them into types. The first is kept correct by a rule in a comment and three cleanup paths; the second by the borrow checker.
+Compare it with the single-threaded version: both single-threaded, but one flattens the lifetimes into `usize`, the other writes them into types. The first is kept correct by a rule in a comment and three cleanup paths; the second by the borrow checker.
 
 This one cannot be written in Go. Go connections only offer a blocking `Read`; a goroutine blocked on A can't also wait on B, so every pair needs at least two goroutines. **Go made the "one execution unit per connection" encapsulation decision for you, and the price is that you can never put two connections into one execution unit.**
 
-## 9. Benchmark: memory and CPU
+## 4. Analysing the code
+
+Reading the code was about structure; the analysis is about behaviour and cost: correctness tests first, then benchmarks.
+
+### Correctness: all four are right
+
+I ran the same behaviour tests against all five:
+
+![[refs/test.py]]
+
+| Relay | B after A drops | A drops in the lobby, then B and C connect | Message A sent before pairing | Both send 500 × 64KB, A drops after receiving all; how many of A's does B get (5 rounds) |
+| --- | --- | --- | --- | --- |
+| Go version | close frame 1001 | B and C paired | B gets it | 500 ×5 |
+| Tokio version | close frame (no status code) | B and C paired | B gets it | 500 ×5 |
+| Std version | close frame 1001 | B and C paired | B gets it | 500 ×5 |
+| Single-threaded version | close frame 1001 | B and C paired | B gets it | 500 ×5 |
+| Human-designed version | close frame (no status code) | B and C paired | B gets it | 500 ×5 |
+
+A dropped its connection once with a FIN (TCP closed normally, no close frame) and once with an RST (abort). Same results.
+
+Everything passed. Look at the second column in particular: a connection that drops while waiting in the "lobby" is the easiest case to miss, and all four agents thought of it and handled it.
+
+So the "bad" in this post is not that AI gets it wrong. **It gets it right, and it patches every edge. What is bad is that it gives the popular solution, and the structure that comes with it: for the same problem it produced four completely different structures under four constraints. Each is the most common pattern in its community, and each takes apart things that belong together, then ties them back with a pile of mechanisms.**
+
+### Benchmark: memory and CPU
 
 The script below builds all five in release mode, starts the server, opens a batch of clients with Python's `websockets`, pairs them up and has both sides send at once, sampling the server's RSS from `/proc` every 10ms and recording the CPU time spent on the whole run.
 
@@ -295,24 +332,24 @@ One run on a 16-core Linux machine (release builds; every round checked that all
 
 How to read them:
 
-- **Compare CPU seconds, not percentages.** The work in each scenario is fixed and the Python clients are mostly the bottleneck; how much CPU time the server spent on the same work is what's comparable. Under bulk transfer `relay_jw238.rs` spent the least: 0.38 s, against 0.55 s for `relay_tokio.rs` and 2.88 s for `relay.go`.
-- **`relay_single.rs`'s 1.39 s is not the architecture's fault.** It is the only one whose wall time doubled: one core pinned at 100%. `perf` shows 56% of the time in `pump`, unmasking payloads one byte at a time (`zip(mask.iter().cycle())` isn't vectorized). That is a detail of the hand-written protocol, and unmasking a word at a time would remove it. `relay_std.rs`, also hand-written, has the same loop; it is just spread over 16 cores.
-- **I did not profile `relay.go`'s 2.88 s**, so no conclusion. Every message is read whole by `ReadMessage`, handed to another goroutine over a channel, then written by `WriteMessage`; that path is the likely suspect.
-- **Thread count is a direct consequence of structure.** `relay_std.rs` uses 3 threads per pair, so 1000 pairs is 3002 threads; both single-threaded versions stay at 1.
-- **With many connections, the idle memory of the tungstenite-based versions is mostly a library default.** tungstenite gives every connection a 128KiB read buffer, so 2000 connections is 250MiB: that's why `relay_tokio.rs` and `relay_jw238.rs` both sit around 260MiB. The two hand-written versions have no such buffer. This row compares default settings, not architectures.
+- **Compare CPU seconds, not percentages.** The work in each scenario is fixed and the Python clients are mostly the bottleneck; how much CPU time the server spent on the same work is what's comparable. Under bulk transfer the human-designed version spent the least: 0.38 s, against 0.55 s for the tokio version and 2.88 s for the Go version.
+- **The single-threaded version's 1.39 s is not the architecture's fault.** It is the only one whose wall time doubled: one core pinned at 100%. `perf` shows 56% of the time in `pump`, unmasking payloads one byte at a time (`zip(mask.iter().cycle())` isn't vectorized). That is a detail of the hand-written protocol, and unmasking a word at a time would remove it. the std version, also hand-written, has the same loop; it is just spread over 16 cores.
+- **I did not profile the Go version's 2.88 s**, so no conclusion. Every message is read whole by `ReadMessage`, handed to another goroutine over a channel, then written by `WriteMessage`; that path is the likely suspect.
+- **Thread count is a direct consequence of structure.** The std version uses 3 threads per pair, so 1000 pairs is 3002 threads; both single-threaded versions stay at 1.
+- **With many connections, the idle memory of the tungstenite-based versions is mostly a library default.** tungstenite gives every connection a 128KiB read buffer, so 2000 connections is 250MiB: that's why the tokio version and the human-designed version both sit around 260MiB. The two hand-written versions have no such buffer. This row compares default settings, not architectures.
 - Each scenario ran once, and the many-connections run takes about 0.3 s per relay, so the numbers are noisy; read them for order of magnitude.
 
-## 10. Why AI-designed architecture is bad
+## 5. How architectural debt is born
 
 All five side by side:
 
-| Relay | Execution units per pair | What ties the lifetimes back together | Rules invented because things were split |
-| --- | --- | --- | --- |
-| `relay.go` | 8 goroutines | 8 channels, `Mutex`, `Once`, `WaitGroup` | the `paired` flag |
-| `relay_tokio.rs` | 1 `Session` task (plus handshake tasks and a global `Matchmaker`) | mpsc, `select!`, `split` | buffering lobby messages, capped at 1024 |
-| `relay_std.rs` | 3 threads (plus handshake threads and a `Lobby` thread) | mpsc, a write lock, `shutdown(Both)` | a `peek` probe once a second |
-| `relay_single.rs` | 0 (everything in one slab) | `peer: Option<usize>`, three cleanup paths | accept only at the end of a round |
-| `relay_jw238.rs` | 1 Future | borrowing: `'rt1: 'pipe` and the other three bounds | none |
+| Relay | Level | Execution units per pair | What ties the lifetimes back together | Rules invented because things were split |
+| --- | --- | --- | --- | --- |
+| Go version | popular | 8 goroutines | 8 channels, `Mutex`, `Once`, `WaitGroup` | the `paired` flag |
+| Tokio version | popular | 1 `Session` task (plus handshake tasks and a global `Matchmaker`) | mpsc, `select!`, `split` | buffering lobby messages, capped at 1024 |
+| Std version | tuning | 3 threads (plus handshake threads and a `Lobby` thread) | mpsc, a write lock, `shutdown(Both)` | a `peek` probe once a second |
+| Single-threaded version | general | 0 (everything in one slab) | `peer: Option<usize>`, three cleanup paths | accept only at the end of a round |
+| Human-designed version | masterpiece | 1 Future | borrowing: `'rt1: 'pipe` and the other three bounds | none |
 
 All four agents did everything the prompt asked. The tests pass; a disconnect in the lobby, messages sent before pairing, not losing messages on disconnect: all handled. That is better than I expected.
 
@@ -323,8 +360,26 @@ But the structure of each was decided by the **technical constraint** in the pro
 - say std only, and you get a thread per direction plus a lock;
 - say fully single-threaded, and you get an event loop plus a slab, with lifetimes turned into indices.
 
-Each is the most common pattern under that constraint. Each first **takes apart** five lifetimes that belong together, putting them into separate execution units or flattening them into integers, then **ties them back** with synchronization primitives, buffer limits, probes and cleanup paths. Every edge case found gets a patch: the `paired` flag, the 1024 limit, the `peek` once a second, accept-at-the-end. Every patch is correct; together, they are the architecture.
+Each is the most common pattern under that constraint. Each first **takes apart** five lifetimes that belong together, putting them into separate execution units or flattening them into integers, then **ties them back** with synchronization primitives, buffer limits, probes and cleanup paths. Every edge case found gets a patch. Every patch is correct; together, they are the architectural debt.
 
-The fourth prompt shows it best. "Fully single-threaded" is a technical constraint, and AI met it. But between "single-threaded" and "one execution unit per pair, five lifetimes in one signature" there is still one judgement: **these five things are one thing.** That judgement was not in the prompt, and AI did not make it on its own. It is the entire difference between `relay_jw238.rs` and `relay_single.rs`.
+### What AI will not tell you
 
-AI can write every kind of encapsulation. **What AI cannot decide is which things are one thing.**
+The four agents' design write-ups are thorough: which concurrency units, how pairing works, how cleanup works on disconnect, nothing left out. But not one of the four says any of the following:
+
+1. **There are five lifetimes underneath this problem.** The requirement doesn't say so and the code doesn't show it. They follow from "when does a connection start, when does it end, who waits for whom". No agent worked that out.
+2. **They live and die together, so they belong in one structure.** "When either side goes away, the other is disconnected too" is a product decision that folds the five lifetimes into one. That decision dictates what the structure should look like, but no agent started its design from it.
+3. **The patches are the cost of taking things apart, not features.** The Go version's `paired` flag, the tokio version's 1024-message limit, the std version's `peek` once a second, the single-threaded version's accept-at-the-end: each write-up presents its patch as careful design. No agent says these rules exist because something that belonged together was split first.
+4. **There are other structures to choose from.** Say Go and you get goroutines plus channels; say tokio and you get spawn plus `select!`. None of the four write-ups mentions "one execution unit per pair" as an option, let alone compares it.
+5. **The risk buried in the structure.** The tokio write-up says "the other direction's future is dropped, so no coroutine is left behind". True, but it leaves out the other half: if the dropped future was holding a message it had just read and not yet written, that message is gone too.
+
+None of this is AI getting something wrong. **Nobody asked.** The prompt says "implement", so it implements; "no tokio", so no tokio; "fully single-threaded", so one thread. It answers every question it is asked very well, but it will not ask the question nobody asked: what is really underneath this problem, and which parts are one thing?
+
+**AI is a tool, and a tool does not think on its own initiative.** It won't stop and say "wait, this requirement should be structured like this". It hands you the most common answer for that stack and patches every edge of it well. The better the patches, the harder it is to notice that the structure itself is the debt.
+
+The fourth prompt shows it best. "Fully single-threaded" is a technical constraint a human added, and AI met it with a general solution. But between "single-threaded" and "one execution unit per pair, five lifetimes in one signature" there is still one judgement: **these five things are one thing.** That judgement was not in the prompt, and AI will not make it on its own. It is the entire difference between the human-designed version and the single-threaded version, and a human made it.
+
+> Faced with an open problem, AI gives you the popular solution. Scold it, and it can become general. But it will never find the masterpiece.
+>
+> — JW238
+
+AI can write every kind of encapsulation. **What AI will not tell you is which things are one thing.**
