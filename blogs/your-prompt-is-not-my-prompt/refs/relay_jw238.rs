@@ -2,13 +2,13 @@
 //! and the two directions take turns (ping-pong).
 //!
 //! Five lifetimes, each one named in the code:
-//!   'rt1   connection A: from its handshake until it is closed
-//!   'rt2   connection B: from its handshake until it is closed
-//!   'flow1 direction A -> B, including the message it may still be holding
-//!   'flow2 direction B -> A, including the message it may still be holding
-//!   'pipe  the pairing itself: the Future returned by `relay`
+//!   'rt1   async runtime 1: side A, its socket plus the readiness that wakes it
+//!   'rt2   async runtime 2: side B, its socket plus the readiness that wakes it
+//!   'flow1 the flow of rt1 (A -> B), including the message it may still be holding
+//!   'flow2 the flow of rt2 (B -> A), including the message it may still be holding
+//!   'pipe  the bridge between rt1 and rt2: the Future returned by `relay`
 //! The only hard constraint is that 'pipe ends no later than any of the other four.
-//! 'r is the event loop (reactor) and outlives all of them.
+//! The reactor is part of each runtime, not a lifetime of its own.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -223,14 +223,14 @@ impl Flow {
     }
 }
 
-/// The pipe. Borrows both connections and both flows; the returned Future is 'pipe,
-/// and 'rt1: 'pipe etc. say that the pipe can never outlive any of them.
+/// The pipe: the bridge between rt1 and rt2. Borrows both runtimes and both flows; the returned
+/// Future is 'pipe, and 'rt1: 'pipe etc. say that the bridge can never outlive any of them.
 ///
 /// Ping-pong: one step of flow1, one step of flow2. If one side is stuck, switch to the other;
 /// only when both are stuck do we go back to the event loop.
-fn relay<'pipe, 'r, 'rt1: 'pipe, 'rt2: 'pipe, 'flow1: 'pipe, 'flow2: 'pipe>(
-    rt1: &'rt1 mut Conn<'r>,
-    rt2: &'rt2 mut Conn<'r>,
+fn relay<'pipe, 'rt1: 'pipe, 'rt2: 'pipe, 'flow1: 'pipe, 'flow2: 'pipe>(
+    rt1: &'rt1 mut Conn<'_>,
+    rt2: &'rt2 mut Conn<'_>,
     flow1: &'flow1 mut Flow,
     flow2: &'flow2 mut Flow,
 ) -> impl Future<Output = ()> + 'pipe {

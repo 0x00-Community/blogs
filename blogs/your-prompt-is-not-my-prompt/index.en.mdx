@@ -9,20 +9,61 @@ status: staged
 ---
 
 export const many = [
-  { relay: 'Go version', idle: 78.5, peak: 142.0, median: 110.2, cpu: 0.47, threads: 18 },
-  { relay: 'tokio version', idle: 265.4, peak: 267.4, median: 267.4, cpu: 0.27, threads: 17 },
-  { relay: 'std version', idle: 39.6, peak: 57.5, median: 48.5, cpu: 0.18, threads: 3002 },
+  { relay: 'Go version', idle: 77.9, peak: 149.9, median: 113.9, cpu: 0.59, threads: 18 },
+  { relay: 'tokio version', idle: 265.4, peak: 267.5, median: 267.5, cpu: 0.20, threads: 17 },
+  { relay: 'std version', idle: 39.4, peak: 57.4, median: 48.4, cpu: 0.17, threads: 3002 },
   { relay: 'single-threaded version', idle: 3.1, peak: 67.5, median: 35.3, cpu: 0.15, threads: 1 },
-  { relay: 'human-designed version', idle: 261.5, peak: 263.6, median: 262.5, cpu: 0.15, threads: 1 },
+  { relay: 'human-designed version', idle: 261.4, peak: 263.5, median: 263.5, cpu: 0.19, threads: 1 },
 ]
 
 export const bulk = [
-  { relay: 'Go version', idle: 11.7, peak: 53.8, median: 39.1, cpu: 2.88, threads: 20 },
-  { relay: 'tokio version', idle: 16.7, peak: 23.0, median: 23.0, cpu: 0.55, threads: 17 },
-  { relay: 'std version', idle: 4.6, peak: 17.5, median: 17.5, cpu: 2.05, threads: 152 },
-  { relay: 'single-threaded version', idle: 2.1, peak: 18.1, median: 18.1, cpu: 1.39, threads: 1 },
-  { relay: 'human-designed version', idle: 15.2, peak: 23.8, median: 23.8, cpu: 0.38, threads: 1 },
+  { relay: 'Go version', idle: 11.8, peak: 55.6, median: 41.6, cpu: 2.82, threads: 21 },
+  { relay: 'tokio version', idle: 16.7, peak: 23.1, median: 23.1, cpu: 0.58, threads: 17 },
+  { relay: 'std version', idle: 4.6, peak: 17.4, median: 17.3, cpu: 1.97, threads: 152 },
+  { relay: 'single-threaded version', idle: 2.1, peak: 17.6, median: 17.6, cpu: 1.42, threads: 1 },
+  { relay: 'human-designed version', idle: 15.1, peak: 24.8, median: 24.8, cpu: 0.35, threads: 1 },
 ]
+
+export const timeline = [
+  { name: 'rt1', segs: [{ from: 0, to: 40, kind: 'wait', label: 'waiting in the lobby' }, { from: 40, to: 100 }] },
+  { name: 'rt2', segs: [{ from: 33, to: 40, kind: 'wait' }, { from: 40, to: 100 }] },
+  { name: 'pipe', segs: [{ from: 40, to: 100 }] },
+  { name: 'flow1', segs: [{ from: 40, to: 78 }], note: 'A is done talking' },
+  { name: 'flow2', segs: [{ from: 40, to: 100 }] },
+]
+
+export function Timeline({ rows, pairedAt, pairedLabel }) {
+  const bar = { position: 'absolute', top: 0, bottom: 0, boxSizing: 'border-box', borderRadius: '3px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.8em', whiteSpace: 'nowrap', overflow: 'hidden' }
+  const kinds = {
+    live: { background: '#5b7fd6', color: '#fff' },
+    wait: { border: '1.5px dashed #5b7fd6', color: 'inherit' },
+  }
+  return (
+    <figure style={{ margin: '1.5em 0' }}>
+      <div style={{ position: 'relative' }}>
+        {rows.map((r) => (
+          <div key={r.name} style={{ display: 'flex', alignItems: 'center', gap: '0.75em', margin: '0.4em 0' }}>
+            <code style={{ flex: '0 0 3.5em' }}>{r.name}</code>
+            <div style={{ position: 'relative', flex: 1, height: '1.5em' }}>
+              {r.segs.map((s) => (
+                <div key={s.from} style={{ ...bar, ...kinds[s.kind ?? 'live'], left: `${s.from}%`, width: `${s.to - s.from}%` }}>{s.label}</div>
+              ))}
+              {r.note && (
+                <span style={{ position: 'absolute', left: `calc(${r.segs.at(-1).to}% + 0.4em)`, right: 0, top: 0, lineHeight: '1.5em', fontSize: '0.8em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', opacity: 0.8 }}>{r.note}</span>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: 'flex', gap: '0.75em' }}>
+        <span style={{ flex: '0 0 3.5em' }} />
+        <div style={{ position: 'relative', flex: 1, height: '1.4em', borderTop: '1px solid currentColor', opacity: 0.6 }}>
+          <span style={{ position: 'absolute', left: `${pairedAt}%`, transform: 'translateX(-50%)', fontSize: '0.8em', whiteSpace: 'nowrap' }}>▲ {pairedLabel}</span>
+        </div>
+      </div>
+    </figure>
+  )
+}
 
 export const columns = [
   ['idle', 'Idle RSS MiB', 1],
@@ -122,21 +163,17 @@ In the requirement there seem to be only "two connections" and "one relay". Unde
 
 | Name | What it is | Starts | Ends |
 | --- | --- | --- | --- |
-| `rt1` | connection A | A's handshake succeeds | A's TCP closes |
-| `rt2` | connection B | B's handshake succeeds | B's TCP closes |
-| `pipe` | the pairing of A and B | pairing succeeds | pairing ends |
-| `flow1` | the direction A → B | `pipe` starts | A stops sending or B stops receiving |
-| `flow2` | the direction B → A | `pipe` starts | B stops sending or A stops receiving |
+| `rt1` | async runtime 1: drives side A | A's handshake succeeds | A's TCP closes |
+| `rt2` | async runtime 2: drives side B | B's handshake succeeds | B's TCP closes |
+| `pipe` | the bridge between `rt1` and `rt2` | pairing succeeds | pairing ends |
+| `flow1` | the flow of `rt1`: A → B | `pipe` starts | A stops sending or B stops receiving |
+| `flow2` | the flow of `rt2`: B → A | `pipe` starts | B stops sending or A stops receiving |
+
+`rt1` and `rt2` are two separate runtimes, think of two independent tokio runtimes, each driving one side; `flow1` and `flow2` run inside them, and `pipe` is the bridge between the two.
 
 On a timeline:
 
-```text
-rt1    |---- waiting in lobby ----|======================|
-rt2                         |----|======================|
-pipe                              |======================|
-flow1                             |==============|  A is done talking
-flow2                             |======================|
-```
+<Timeline rows={timeline} pairedAt={40} pairedLabel="paired" />
 
 There is exactly one hard constraint between them: `flow1` and `flow2` lie inside `pipe`, and `pipe` lies inside the intersection of `rt1` and `rt2`.
 
@@ -154,16 +191,12 @@ One by one: where do the five lifetimes end up in each program? AI chose the str
 >
 > Model: a Claude Opus 5.5 (`claude-opus-5-5`) subagent. Preceded by the requirement from section 1 and followed by the common closing instructions.
 
-![[refs/relay.go#L39-L50]]
-
 ![[refs/relay.go#L142-L158]]
-
-![[refs/relay.go#L166-L205]]
 
 The five lifetimes in the Go version:
 
-- `rt1`, `rt2`: one `client` each. Every `client` starts two goroutines as soon as it is created: `readLoop` (the only reader) and `pingLoop` (keepalive). On top of that, each connection's HTTP handler goroutine stays blocked until the session ends.
-- `pipe`: one call to `relay(peer, c)` inside the handler of the connection that arrived second.
+- `rt1`, `rt2` (the two runtimes): one `client` each, with the goroutines hanging off it. Every `client` starts two goroutines as soon as it is created: `readLoop` (the only reader) and `pingLoop` (keepalive). On top of that, each connection's HTTP handler goroutine stays blocked until the session ends.
+- `pipe` (the bridge): one call to `relay(peer, c)` inside the handler of the connection that arrived second.
 - `flow1`, `flow2`: the two `pump` goroutines started by `relay`.
 
 One pair is **8 goroutines**: 2 handlers, 2 `readLoop`s, 2 `pingLoop`s, 2 `pump`s. Each `client` also carries 4 channels (`in`, `dead`, `quit`, `sessionDone`), a `sync.Once` and a `sync.WaitGroup`; the `hub` has a `sync.Mutex`.
@@ -180,15 +213,13 @@ The most telling piece is the `paired` field. The waiter disconnecting and the n
 >
 > Model: a Claude Opus 5.5 (`claude-opus-5-5`) subagent. Preceded by the requirement from section 1 and followed by the common closing instructions.
 
-![[refs/relay_tokio.rs#L68-L102]]
-
 ![[refs/relay_tokio.rs#L121-L142]]
 
 The five lifetimes in the tokio version:
 
-- `rt1`, `rt2`: the `Ws` value. A per-connection task does the handshake, then hands it over an mpsc channel to the single global `Matchmaker` task.
+- `rt1`, `rt2` (the two runtimes): there are none of their own. A and B are just `Ws` values moved around inside the one shared tokio runtime. A per-connection task does the handshake, then hands it over an mpsc channel to the single global `Matchmaker` task.
 - The lobby: `Matchmaker` owns the waiting slot. When someone is waiting, it uses `select!` to wait for "a new connection arrives" and "the waiter does something" at the same time.
-- `pipe`: the spawned `Session` task.
+- `pipe` (the bridge): the spawned `Session` task.
 - `flow1`, `flow2`: the two `pump` futures inside `select!`.
 
 Much cleaner than Go: no locks, ownership moves along "handshake task → channel → Matchmaker → Session", and `select!` makes the two directions live and die together; ending is dropping.
@@ -209,15 +240,13 @@ Go and tokio are the popular solution: search for "Go WebSocket relay" or "tokio
 
 Next comes human tuning. Prompts 3 and 4 no longer just name a stack; they add constraints: no tokio, and then fully single-threaded. The constraints push AI out of the community default, so it has to handle the protocol and schedule the connections itself.
 
-![[refs/relay_std.rs#L268-L281]]
-
-![[refs/relay_std.rs#L294-L307]]
+![[refs/relay_std.rs#L244-L265]]
 
 Without tokio, this agent didn't use tungstenite either: SHA-1, Base64, the HTTP handshake and framing are all hand-written, about 190 lines. The relay part is about 130 lines:
 
-- `rt1`, `rt2`: two `Peer`s, each a `TcpStream` plus a write lock `Mutex<()>`.
+- `rt1`, `rt2` (the two runtimes): two `Peer`s, each a `TcpStream` plus a write lock `Mutex<()>`. Blocking I/O has no readiness notification, so what drives each side can only be a thread blocked on it.
 - The lobby: a `Lobby` thread owns the waiting slot and probes the waiter with a non-blocking `peek` once a second.
-- `pipe`: one `Pair` thread per pair.
+- `pipe` (the bridge): one `Pair` thread per pair.
 - `flow1`, `flow2`: two pump threads inside `thread::scope`.
 
 The structure is clear, and `thread::scope` is used well: the pumps borrow `&Peer`, no `Arc`, no `'static`. The price is 3 threads per pair: with 1000 pairs the benchmark saw **3002 threads**.
@@ -235,11 +264,7 @@ The `peek` probe has a blind spot too: if A sends a message and then disconnects
 >
 > Model: a Claude Opus 5.5 (`claude-opus-5-5`) subagent. Preceded by the requirement from section 1 and followed by the common closing instructions.
 
-![[refs/relay_single.rs#L284-L292]]
-
-![[refs/relay_single.rs#L406-L409]]
-
-![[refs/relay_single.rs#L579-L600]]
+![[refs/relay_single.rs#L497-L534]]
 
 The fourth prompt added just "fully single-threaded". What came back does have exactly one thread, and passes every test:
 
@@ -249,8 +274,8 @@ The fourth prompt added just "fully single-threaded". What came back does have e
 
 Where did the five lifetimes go?
 
-- `rt1`, `rt2`: two slots in the slab.
-- `pipe`: the two `peer: Option<usize>` fields pointing at each other.
+- `rt1`, `rt2` (the two runtimes): two slots in the slab, all connections sharing one `poll` loop.
+- `pipe` (the bridge): the two `peer: Option<usize>` fields pointing at each other.
 - `flow1`, `flow2`: **gone**. They are just "bytes in the peer's `wbuf`"; no structure stands for them.
 
 The lifetimes were flattened into integer indices. The compiler cannot know whether the `usize` in `peer` still refers to the same connection, so the code has several runtime assertions like `expect("peer alive")`, plus a rule that lives only in a comment: **accept new connections at the very end of each round, or a slot freed in this round may be reused and `peer` would point at a stranger.**
@@ -265,28 +290,18 @@ But nowhere in those 541 lines is "these five lifetimes live and die together" s
 
 Also one thread, one `poll(2)`, no tokio. The difference is that a human told AI first: there are five lifetimes underneath, they live and die together, so each pair should have exactly one execution unit. That step is not tuning and not one more technical constraint: it is an architectural judgement.
 
-![[refs/relay_jw238.rs#L338-L348]]
-
 - **The whole server is one thread.** One `poll(2)` waits on every socket, and an executor of a few dozen lines polls the Futures that were woken. The lobby is an `Rc<RefCell<_>>`; tasks borrow the reactor and the lobby, with no `'static` anywhere.
 - **Each pair is a single Future.** Two connections, two directions and a "whose turn" flag all live in the one Future that `relay` returns.
 - **The two directions take turns.** Each step moves at most one message. a2b takes a step, then b2a; if one side has nothing to read, switch to the other; only when both are stuck do we return to the event loop.
 
 The five lifetimes are no longer a story in the comments: they are **Rust lifetime parameters in the signature**:
 
-```rust
-fn relay<'pipe, 'r, 'rt1: 'pipe, 'rt2: 'pipe, 'flow1: 'pipe, 'flow2: 'pipe>(
-    rt1: &'rt1 mut Conn<'r>,
-    rt2: &'rt2 mut Conn<'r>,
-    flow1: &'flow1 mut Flow,
-    flow2: &'flow2 mut Flow,
-) -> impl Future<Output = ()> + 'pipe
-```
+![[refs/relay_jw238.rs#L226-L254]]
 
-- `'rt1`: connection A. Owned by the task of the first arrival, from the handshake on, **including the time spent waiting in the lobby**. While waiting it only asks `poll(2)` for `POLLRDHUP`: a hang-up is noticed, and whatever A sends stays in the socket until `flow1` relays it to B after pairing. Nothing has to be read, so there is no `pending` buffer and no 1024-message limit.
-- `'rt2`: connection B. B's task finishes its handshake, drops the connection into A's `Mailbox`, wakes A and exits.
-- `'flow1`, `'flow2`: two `Flow` enums. **Not tasks, not threads, not channels: just two states**, created by A's task at pairing time.
-- `'pipe`: the Future returned by `relay`. The four bounds `'rt1: 'pipe` and so on are the one hard constraint from section 2, now checked by the compiler.
-- `'r`: the event loop itself. It outlives all five and does not belong to the pair.
+- `'rt1`: async runtime 1, side A: A's socket plus the reactor's readiness for it (`Conn`). Owned by the task of the first arrival, from the handshake on, **including the time spent waiting in the lobby**. While waiting it only asks `poll(2)` for `POLLRDHUP`: a hang-up is noticed, and whatever A sends stays in the socket until `flow1` relays it to B after pairing. Nothing has to be read, so there is no `pending` buffer and no 1024-message limit.
+- `'rt2`: async runtime 2, side B. B's task finishes its handshake, drops it into A's `Mailbox`, wakes A and exits; from then on A's task drives it.
+- `'flow1`, `'flow2`: the flows of `rt1` and `rt2`, two `Flow` enums. **Not tasks, not threads, not channels: just two states**, created by A's task at pairing time.
+- `'pipe`: the bridge. The Future returned by `relay`, joining `rt1` and `rt2`. The four bounds `'rt1: 'pipe` and so on are the one hard constraint from section 2, now checked by the compiler.
 
 Separating `'flow` from `'pipe` is the key decision. `relay` only **borrows** the two `Flow`s, so they are still alive after `pipe` ends: if one still holds an unflushed message, the caller can see it and deliver it before closing the connections (`Flow::drain`). The "drop means discard" moment from the tokio version does not exist here.
 
@@ -340,9 +355,9 @@ One run on a 16-core Linux machine (release builds; every round checked that all
 
 How to read them:
 
-- **Compare CPU seconds, not percentages.** The work in each scenario is fixed and the Python clients are mostly the bottleneck; how much CPU time the server spent on the same work is what's comparable. Under bulk transfer the human-designed version spent the least: 0.38 s, against 0.55 s for the tokio version and 2.88 s for the Go version.
-- **The single-threaded version's 1.39 s is not the architecture's fault.** It is the only one whose wall time doubled: one core pinned at 100%. `perf` shows 56% of the time in `pump`, unmasking payloads one byte at a time (`zip(mask.iter().cycle())` isn't vectorized). That is a detail of the hand-written protocol, and unmasking a word at a time would remove it. the std version, also hand-written, has the same loop; it is just spread over 16 cores.
-- **I did not profile the Go version's 2.88 s**, so no conclusion. Every message is read whole by `ReadMessage`, handed to another goroutine over a channel, then written by `WriteMessage`; that path is the likely suspect.
+- **Compare CPU seconds, not percentages.** The work in each scenario is fixed and the Python clients are mostly the bottleneck; how much CPU time the server spent on the same work is what's comparable. Under bulk transfer the human-designed version spent the least: 0.35 s, against 0.58 s for the tokio version and 2.82 s for the Go version.
+- **The single-threaded version's 1.42 s is not the architecture's fault.** It is the only one whose wall time doubled: one core pinned at 100%. `perf` shows 56% of the time in `pump`, unmasking payloads one byte at a time (`zip(mask.iter().cycle())` isn't vectorized). That is a detail of the hand-written protocol, and unmasking a word at a time would remove it. the std version, also hand-written, has the same loop; it is just spread over 16 cores.
+- **I did not profile the Go version's 2.82 s**, so no conclusion. Every message is read whole by `ReadMessage`, handed to another goroutine over a channel, then written by `WriteMessage`; that path is the likely suspect.
 - **Thread count is a direct consequence of structure.** The std version uses 3 threads per pair, so 1000 pairs is 3002 threads; both single-threaded versions stay at 1.
 - **With many connections, the idle memory of the tungstenite-based versions is mostly a library default.** tungstenite gives every connection a 128KiB read buffer, so 2000 connections is 250MiB: that's why the tokio version and the human-designed version both sit around 260MiB. The two hand-written versions have no such buffer. This row compares default settings, not architectures.
 - Each scenario ran once, and the many-connections run takes about 0.3 s per relay, so the numbers are noisy; read them for order of magnitude.

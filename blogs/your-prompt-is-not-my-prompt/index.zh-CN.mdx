@@ -9,20 +9,61 @@ status: staged
 ---
 
 export const many = [
-  { relay: 'Go 版', idle: 78.5, peak: 142.0, median: 110.2, cpu: 0.47, threads: 18 },
-  { relay: 'tokio 版', idle: 265.4, peak: 267.4, median: 267.4, cpu: 0.27, threads: 17 },
-  { relay: 'std 版', idle: 39.6, peak: 57.5, median: 48.5, cpu: 0.18, threads: 3002 },
+  { relay: 'Go 版', idle: 77.9, peak: 149.9, median: 113.9, cpu: 0.59, threads: 18 },
+  { relay: 'tokio 版', idle: 265.4, peak: 267.5, median: 267.5, cpu: 0.20, threads: 17 },
+  { relay: 'std 版', idle: 39.4, peak: 57.4, median: 48.4, cpu: 0.17, threads: 3002 },
   { relay: '单线程版', idle: 3.1, peak: 67.5, median: 35.3, cpu: 0.15, threads: 1 },
-  { relay: '人定架构版', idle: 261.5, peak: 263.6, median: 262.5, cpu: 0.15, threads: 1 },
+  { relay: '人定架构版', idle: 261.4, peak: 263.5, median: 263.5, cpu: 0.19, threads: 1 },
 ]
 
 export const bulk = [
-  { relay: 'Go 版', idle: 11.7, peak: 53.8, median: 39.1, cpu: 2.88, threads: 20 },
-  { relay: 'tokio 版', idle: 16.7, peak: 23.0, median: 23.0, cpu: 0.55, threads: 17 },
-  { relay: 'std 版', idle: 4.6, peak: 17.5, median: 17.5, cpu: 2.05, threads: 152 },
-  { relay: '单线程版', idle: 2.1, peak: 18.1, median: 18.1, cpu: 1.39, threads: 1 },
-  { relay: '人定架构版', idle: 15.2, peak: 23.8, median: 23.8, cpu: 0.38, threads: 1 },
+  { relay: 'Go 版', idle: 11.8, peak: 55.6, median: 41.6, cpu: 2.82, threads: 21 },
+  { relay: 'tokio 版', idle: 16.7, peak: 23.1, median: 23.1, cpu: 0.58, threads: 17 },
+  { relay: 'std 版', idle: 4.6, peak: 17.4, median: 17.3, cpu: 1.97, threads: 152 },
+  { relay: '单线程版', idle: 2.1, peak: 17.6, median: 17.6, cpu: 1.42, threads: 1 },
+  { relay: '人定架构版', idle: 15.1, peak: 24.8, median: 24.8, cpu: 0.35, threads: 1 },
 ]
+
+export const timeline = [
+  { name: 'rt1', segs: [{ from: 0, to: 40, kind: 'wait', label: '在大厅里等' }, { from: 40, to: 100 }] },
+  { name: 'rt2', segs: [{ from: 33, to: 40, kind: 'wait' }, { from: 40, to: 100 }] },
+  { name: 'pipe', segs: [{ from: 40, to: 100 }] },
+  { name: 'flow1', segs: [{ from: 40, to: 78 }], note: 'A 先说完了' },
+  { name: 'flow2', segs: [{ from: 40, to: 100 }] },
+]
+
+export function Timeline({ rows, pairedAt, pairedLabel }) {
+  const bar = { position: 'absolute', top: 0, bottom: 0, boxSizing: 'border-box', borderRadius: '3px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.8em', whiteSpace: 'nowrap', overflow: 'hidden' }
+  const kinds = {
+    live: { background: '#5b7fd6', color: '#fff' },
+    wait: { border: '1.5px dashed #5b7fd6', color: 'inherit' },
+  }
+  return (
+    <figure style={{ margin: '1.5em 0' }}>
+      <div style={{ position: 'relative' }}>
+        {rows.map((r) => (
+          <div key={r.name} style={{ display: 'flex', alignItems: 'center', gap: '0.75em', margin: '0.4em 0' }}>
+            <code style={{ flex: '0 0 3.5em' }}>{r.name}</code>
+            <div style={{ position: 'relative', flex: 1, height: '1.5em' }}>
+              {r.segs.map((s) => (
+                <div key={s.from} style={{ ...bar, ...kinds[s.kind ?? 'live'], left: `${s.from}%`, width: `${s.to - s.from}%` }}>{s.label}</div>
+              ))}
+              {r.note && (
+                <span style={{ position: 'absolute', left: `calc(${r.segs.at(-1).to}% + 0.4em)`, right: 0, top: 0, lineHeight: '1.5em', fontSize: '0.8em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', opacity: 0.8 }}>{r.note}</span>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: 'flex', gap: '0.75em' }}>
+        <span style={{ flex: '0 0 3.5em' }} />
+        <div style={{ position: 'relative', flex: 1, height: '1.4em', borderTop: '1px solid currentColor', opacity: 0.6 }}>
+          <span style={{ position: 'absolute', left: `${pairedAt}%`, transform: 'translateX(-50%)', fontSize: '0.8em', whiteSpace: 'nowrap' }}>▲ {pairedLabel}</span>
+        </div>
+      </div>
+    </figure>
+  )
+}
 
 export const columns = [
   ['idle', '空闲 RSS MiB', 1],
@@ -122,21 +163,17 @@ prompt 的结尾都一样：把代码写到指定目录、确保能编译通过�
 
 | 名字 | 是什么 | 何时开始 | 何时结束 |
 | --- | --- | --- | --- |
-| `rt1` | A 这条连接 | A 握手成功 | A 的 TCP 关闭 |
-| `rt2` | B 这条连接 | B 握手成功 | B 的 TCP 关闭 |
-| `pipe` | A 和 B 的配对关系 | 配对成功 | 配对解除 |
-| `flow1` | A → B 这个方向 | `pipe` 开始 | A 不再发，或 B 不再收 |
-| `flow2` | B → A 这个方向 | `pipe` 开始 | B 不再发，或 A 不再收 |
+| `rt1` | 异步运行时 1：驱动 A 这一侧 | A 握手成功 | A 的 TCP 关闭 |
+| `rt2` | 异步运行时 2：驱动 B 这一侧 | B 握手成功 | B 的 TCP 关闭 |
+| `pipe` | 桥：把 `rt1` 和 `rt2` 接起来 | 配对成功 | 配对解除 |
+| `flow1` | `rt1` 的 flow：A → B | `pipe` 开始 | A 不再发，或 B 不再收 |
+| `flow2` | `rt2` 的 flow：B → A | `pipe` 开始 | B 不再发，或 A 不再收 |
+
+`rt1` 和 `rt2` 是两个分开的运行时，相当于两个独立的 tokio 运行时，各自驱动一侧；`flow1`、`flow2` 分别跑在它们里面，`pipe` 是架在两者之间的桥。
 
 画在时间轴上：
 
-```text
-rt1    |---- 在大厅里等 ----|============================|
-rt2                    |---|============================|
-pipe                        |============================|
-flow1                       |===================|  A 先说完了
-flow2                       |============================|
-```
+<Timeline rows={timeline} pairedAt={40} pairedLabel="配对" />
 
 它们之间只有一条硬约束：`flow1`、`flow2` 落在 `pipe` 里，`pipe` 落在 `rt1` 和 `rt2` 的交集里。
 
@@ -154,16 +191,12 @@ flow2                       |============================|
 >
 > 模型：Claude Opus 5.5（`claude-opus-5-5`）子 agent。前面是第一节的需求原文，后面是统一的结尾要求。
 
-![[refs/relay.go#L39-L50]]
-
 ![[refs/relay.go#L142-L158]]
-
-![[refs/relay.go#L166-L205]]
 
 五个生命周期在 Go 版里：
 
-- `rt1`、`rt2`：各是一个 `client`。每个 `client` 一创建就带两个 goroutine：`readLoop`（唯一的读者）和 `pingLoop`（心跳）。另外，每条连接的 HTTP handler goroutine 会一直阻塞到会话结束。
-- `pipe`：后到的那条连接的 handler 里的一次 `relay(peer, c)` 调用。
+- `rt1`、`rt2`（两侧的运行时）：各是一个 `client` 和挂在它上面的那组 goroutine。每个 `client` 一创建就带两个 goroutine：`readLoop`（唯一的读者）和 `pingLoop`（心跳）。另外，每条连接的 HTTP handler goroutine 会一直阻塞到会话结束。
+- `pipe`（桥）：后到的那条连接的 handler 里的一次 `relay(peer, c)` 调用。
 - `flow1`、`flow2`：`relay` 里开的两个 `pump` goroutine。
 
 一对连接是 **8 个 goroutine**：2 个 handler、2 个 `readLoop`、2 个 `pingLoop`、2 个 `pump`。每个 `client` 还带 4 个 channel（`in`、`dead`、`quit`、`sessionDone`）、一个 `sync.Once`、一个 `sync.WaitGroup`；`hub` 上还有一把 `sync.Mutex`。
@@ -180,15 +213,13 @@ flow2                       |============================|
 >
 > 模型：Claude Opus 5.5（`claude-opus-5-5`）子 agent。前面是第一节的需求原文，后面是统一的结尾要求。
 
-![[refs/relay_tokio.rs#L68-L102]]
-
 ![[refs/relay_tokio.rs#L121-L142]]
 
 五个生命周期在 tokio 版里：
 
-- `rt1`、`rt2`：`Ws` 这个值。握手由每条连接一个任务完成，然后通过 mpsc channel 交给全局唯一的 `Matchmaker` 任务。
+- `rt1`、`rt2`（两侧的运行时）：没有各自的运行时。A、B 只是 `Ws` 这个值，在全局共享的 tokio 运行时里被 move 来 move 去。握手由每条连接一个任务完成，然后通过 mpsc channel 交给全局唯一的 `Matchmaker` 任务。
 - 大厅：`Matchmaker` 独占一个等待槽。槽里有人时，它用 `select!` 同时等“新连接到来”和“等待者自己的动静”。
-- `pipe`：被 spawn 出来的 `Session` 任务。
+- `pipe`（桥）：被 spawn 出来的 `Session` 任务。
 - `flow1`、`flow2`：`select!` 里的两个 `pump` future。
 
 比 Go 干净很多：没有锁，所有权从“握手任务 → channel → Matchmaker → Session”一路 move 过去；`select!` 让两个方向同生共死，结束就是 drop。
@@ -209,15 +240,13 @@ Go 和 tokio 这两份就是 popular solution：去搜“Go WebSocket relay”�
 
 接下来是人的调优。第 3、4 个 prompt 不再只说技术栈，而是加约束：不许用 tokio，再进一步，完全单线程。约束把 AI 从社区默认写法里推出来，它只能自己处理协议、自己调度连接。
 
-![[refs/relay_std.rs#L268-L281]]
-
-![[refs/relay_std.rs#L294-L307]]
+![[refs/relay_std.rs#L244-L265]]
 
 不许用 tokio，这个 agent 连 tungstenite 也没用，SHA-1、Base64、HTTP 握手、帧编解码全部手写，约 190 行。中转部分约 130 行：
 
-- `rt1`、`rt2`：两个 `Peer`，每个是一个 `TcpStream` 加一把写锁 `Mutex<()>`。
+- `rt1`、`rt2`（两侧的运行时）：两个 `Peer`，每个是一个 `TcpStream` 加一把写锁 `Mutex<()>`。阻塞 I/O 没有就绪通知，驱动每一侧的只能是阻塞在它上面的线程。
 - 大厅：一个 `Lobby` 线程独占等待槽，每秒用非阻塞 `peek` 探一次等待者是否还活着。
-- `pipe`：每对连接一个 `Pair` 线程。
+- `pipe`（桥）：每对连接一个 `Pair` 线程。
 - `flow1`、`flow2`：`thread::scope` 里的两个 pump 线程。
 
 结构很清楚，`thread::scope` 也用得好：pump 借用 `&Peer`，没有 `Arc`，没有 `'static`。代价是一对连接 3 个线程，压测里 1000 对连接时进程有 **3002 个线程**。
@@ -235,11 +264,7 @@ Go 和 tokio 这两份就是 popular solution：去搜“Go WebSocket relay”�
 >
 > 模型：Claude Opus 5.5（`claude-opus-5-5`）子 agent。前面是第一节的需求原文，后面是统一的结尾要求。
 
-![[refs/relay_single.rs#L284-L292]]
-
-![[refs/relay_single.rs#L406-L409]]
-
-![[refs/relay_single.rs#L579-L600]]
+![[refs/relay_single.rs#L497-L534]]
 
 第四个 prompt 只多了“完全单线程”五个字。agent 交出来的东西，确实只有一个线程，测试也全过：
 
@@ -249,8 +274,8 @@ Go 和 tokio 这两份就是 popular solution：去搜“Go WebSocket relay”�
 
 五个生命周期在这里去哪了？
 
-- `rt1`、`rt2`：slab 里的两个槽位。
-- `pipe`：两个槽位里互相指向的 `peer: Option<usize>`。
+- `rt1`、`rt2`（两侧的运行时）：slab 里的两个槽位，所有连接共用一个 `poll` 循环。
+- `pipe`（桥）：两个槽位里互相指向的 `peer: Option<usize>`。
 - `flow1`、`flow2`：**消失了**。它们只是“对端 `wbuf` 里的字节”，没有任何结构对应。
 
 生命周期被抹平成了整数下标。编译器不知道 `peer` 里的那个 `usize` 还指不指向同一个连接，所以代码里有好几处 `expect("peer alive")` 这样的运行时断言，还有一条只写在注释里的规则：**新连接要在每一轮最后才 accept，否则本轮刚释放的槽位可能被复用，`peer` 就指向了一个陌生人。**
@@ -265,28 +290,18 @@ Go 和 tokio 这两份就是 popular solution：去搜“Go WebSocket relay”�
 
 同样是一个线程、一个 `poll(2)`、不用 tokio。区别在于，人先告诉 AI：底下有五个生命周期，它们同生共死，所以每对连接只该有一个执行单元。这一步不是调优，不是再加一条技术约束，而是一个架构判断。
 
-![[refs/relay_jw238.rs#L338-L348]]
-
 - **整个服务器只有一个线程。** 一次 `poll(2)` 等所有 socket，一个几十行的 executor 轮流 poll 被唤醒的 Future。大厅是 `Rc<RefCell<_>>`，任务借用 reactor 和大厅，全程没有 `'static`。
 - **每一对连接只有一个 Future。** 两条连接、两个方向、一个“轮到谁”的标记，全在 `relay` 返回的那一个 Future 里。
 - **两个方向乒乓交替。** 每一步最多搬一条消息。a2b 走一步，换 b2a 走一步；一边读不出来，就换另一边；两边都读不出来，才回到事件循环。
 
 五个生命周期不再是注释里的说法，而是**写进签名的 Rust 生命周期参数**：
 
-```rust
-fn relay<'pipe, 'r, 'rt1: 'pipe, 'rt2: 'pipe, 'flow1: 'pipe, 'flow2: 'pipe>(
-    rt1: &'rt1 mut Conn<'r>,
-    rt2: &'rt2 mut Conn<'r>,
-    flow1: &'flow1 mut Flow,
-    flow2: &'flow2 mut Flow,
-) -> impl Future<Output = ()> + 'pipe
-```
+![[refs/relay_jw238.rs#L226-L254]]
 
-- `'rt1`：A 这条连接。由先到的那个任务持有，从握手开始，**在大厅里等的那一段也在**。等待时它只向 `poll(2)` 要 `POLLRDHUP`：对端断开会被发现，A 发来的消息则原样留在 socket 里，等配对之后由 `flow1` 转给 B。不用读出来，所以不需要 `pending` 缓冲，也不需要 1024 条的上限。
-- `'rt2`：B 这条连接。B 的任务握手完成后，把连接放进 A 的信箱（`Mailbox`），唤醒 A，然后退出。
-- `'flow1`、`'flow2`：两个 `Flow` 枚举。**不是任务，不是线程，不是 channel，只是两个状态**，由 A 的任务在配对时创建。
-- `'pipe`：`relay` 返回的 Future。`'rt1: 'pipe` 这四个约束，就是第二节那条唯一的硬约束，现在由编译器检查。
-- `'r`：事件循环本身。它比上面五个都长，不属于这对连接。
+- `'rt1`：异步运行时 1，也就是 A 这一侧：A 的 socket，加上 reactor 对它的就绪通知（`Conn`）。由先到的那个任务持有，从握手开始，**在大厅里等的那一段也在**。等待时它只向 `poll(2)` 要 `POLLRDHUP`：对端断开会被发现，A 发来的消息则原样留在 socket 里，等配对之后由 `flow1` 转给 B。不用读出来，所以不需要 `pending` 缓冲，也不需要 1024 条的上限。
+- `'rt2`：异步运行时 2，也就是 B 这一侧。B 的任务握手完成后，把它放进 A 的信箱（`Mailbox`），唤醒 A，然后退出；之后它由 A 的任务驱动。
+- `'flow1`、`'flow2`：分别是 `rt1` 和 `rt2` 的 flow，两个 `Flow` 枚举。**不是任务，不是线程，不是 channel，只是两个状态**，由 A 的任务在配对时创建。
+- `'pipe`：桥。`relay` 返回的 Future，把 `rt1` 和 `rt2` 接起来。`'rt1: 'pipe` 这四个约束，就是第二节那条唯一的硬约束，现在由编译器检查。
 
 把 `'flow` 和 `'pipe` 分开，是这份代码最关键的决定。`relay` 只是**借用**两个 `Flow`，所以 `pipe` 结束之后，`flow` 还活着：它手里如果还攥着一条没写出去的消息，调用方可以看见，并在关闭连接之前把它交出去（`Flow::drain`）。tokio 版本里那个“drop 即丢弃”的时机，在这里不存在。
 
@@ -340,9 +355,9 @@ A 的断开方式分别用 FIN（正常关 TCP、不发关闭帧）和 RST（直
 
 怎么读这两张表：
 
-- **CPU 看“CPU 秒”，不看百分比。** 每个场景的工作量是固定的，瓶颈大多在 Python 客户端；同样的活儿，服务器花了多少 CPU 时间才是可比的。大流量下人定架构版最少：0.38 秒，tokio 版 0.55 秒，Go 版 2.88 秒。
-- **单线程版的 1.39 秒不是架构的锅。** 它是唯一一个墙钟时间翻倍的版本：单核跑满了 100%。我用 `perf` 看了一下，56% 的时间花在 `pump` 里逐字节地去掩码（`zip(mask.iter().cycle())` 没有被向量化）。这是手写协议的细节，换成按字去掩码就能省下来。同样手写协议的 std 版也是这个循环，只是被 16 个核分摊了。
-- **Go 版的 2.88 秒我没有 profile**，不下结论。它每条消息要经过 `ReadMessage` 整条读出、经 channel 交给另一个 goroutine、再 `WriteMessage`，大概和这条路径有关。
+- **CPU 看“CPU 秒”，不看百分比。** 每个场景的工作量是固定的，瓶颈大多在 Python 客户端；同样的活儿，服务器花了多少 CPU 时间才是可比的。大流量下人定架构版最少：0.35 秒，tokio 版 0.58 秒，Go 版 2.82 秒。
+- **单线程版的 1.42 秒不是架构的锅。** 它是唯一一个墙钟时间翻倍的版本：单核跑满了 100%。我用 `perf` 看了一下，56% 的时间花在 `pump` 里逐字节地去掩码（`zip(mask.iter().cycle())` 没有被向量化）。这是手写协议的细节，换成按字去掩码就能省下来。同样手写协议的 std 版也是这个循环，只是被 16 个核分摊了。
+- **Go 版的 2.82 秒我没有 profile**，不下结论。它每条消息要经过 `ReadMessage` 整条读出、经 channel 交给另一个 goroutine、再 `WriteMessage`，大概和这条路径有关。
 - **线程数是结构的直接后果。** std 版一对连接 3 个线程，1000 对就是 3002 个；两个单线程版本始终是 1。
 - **连接多时，tungstenite 系的空闲内存主要是库的默认配置。** tungstenite 默认给每条连接分配 128KiB 的读缓冲，2000 条连接就是 250MiB，所以 tokio 版和人定架构版都在 260MiB 上下。手写协议的两个版本没有这个缓冲。这一行比较的是默认配置，不是架构。
 - 每个场景只跑了一次，连接多那组每个版本只跑了 0.3 秒左右，数字有波动，看量级就好。
