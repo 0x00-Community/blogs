@@ -355,12 +355,12 @@ One run on a 16-core Linux machine (release builds; every round checked that all
 
 How to read them:
 
-- **Compare CPU seconds, not percentages.** The work in each scenario is fixed and the Python clients are mostly the bottleneck; how much CPU time the server spent on the same work is what's comparable. Under bulk transfer the human-designed version spent the least: 0.35 s, against 0.58 s for the tokio version and 2.82 s for the Go version.
-- **The single-threaded version's 1.42 s is not the architecture's fault.** It is the only one whose wall time doubled: one core pinned at 100%. `perf` shows 56% of the time in `pump`, unmasking payloads one byte at a time (`zip(mask.iter().cycle())` isn't vectorized). That is a detail of the hand-written protocol, and unmasking a word at a time would remove it. the std version, also hand-written, has the same loop; it is just spread over 16 cores.
-- **I did not profile the Go version's 2.82 s**, so no conclusion. Every message is read whole by `ReadMessage`, handed to another goroutine over a channel, then written by `WriteMessage`; that path is the likely suspect.
-- **Thread count is a direct consequence of structure.** The std version uses 3 threads per pair, so 1000 pairs is 3002 threads; both single-threaded versions stay at 1.
-- **With many connections, the idle memory of the tungstenite-based versions is mostly a library default.** tungstenite gives every connection a 128KiB read buffer, so 2000 connections is 250MiB: that's why the tokio version and the human-designed version both sit around 260MiB. The two hand-written versions have no such buffer. This row compares default settings, not architectures.
-- Each scenario ran once, and the many-connections run takes about 0.3 s per relay, so the numbers are noisy; read them for order of magnitude.
+- **Look at CPU seconds.** Under bulk transfer the human-designed version spent the least: 0.35 s, against 0.58 s for the tokio version and 2.82 s for the Go version.
+- **The single-threaded version's 1.42 s is not the architecture's fault.** `perf` puts more than half of it in unmasking payloads byte by byte, a detail of the hand-written protocol.
+- **Thread count follows directly from structure.** The std version has 3002 threads at 1000 pairs; both single-threaded versions stay at 1.
+- **Idle memory differences are mostly a library default** (tungstenite's 128KiB read buffer per connection), not architecture.
+
+Each scenario ran once; read the numbers for order of magnitude.
 
 ## 5. How architectural debt is born
 
