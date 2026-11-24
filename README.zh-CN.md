@@ -37,7 +37,7 @@ authors: [你的作者-id]    # 对应 authors/<id>.yml
 tags: [rust, gc]          # 可选
 summary: 列表里显示的一句话简介。
 lang: zh-CN               # en | zh-CN
-draft: false              # 可选
+status: draft             # draft | staged | release | archive
 ---
 
 正文是 Markdown（支持 GFM 表格、任务列表等），需要时可以写 JSX。
@@ -51,7 +51,7 @@ bun install
 bun run check
 ```
 
-检查内容：作者文件格式、文章作者必须在 authors/ 中存在、文件夹命名、frontmatter 必填字段、文章必须是 `.mdx`、相对链接和图片在文章文件夹内且存在、MDX 能正常编译。
+检查内容：作者文件格式、文章作者必须在 authors/ 中存在、文件夹命名、frontmatter 必填字段（含 `status`）、文章必须是 `.mdx`、相对链接和图片在文章文件夹内且存在、MDX 能正常编译。
 
 ## 🤝 参与贡献
 

@@ -17,7 +17,8 @@ const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const LANGS = ["en", "zh-CN"] as const;
 const ASSETS = /\.(png|jpe?g|gif|webp|avif|svg|mp4|webm)$/i;
-const REQUIRED = ["title", "date", "authors", "summary", "lang"] as const;
+const STATUSES = ["draft", "staged", "release", "archive"] as const;
+const REQUIRED = ["title", "date", "authors", "summary", "lang", "status"] as const;
 
 type Problem = { file: string; message: string };
 const problems: Problem[] = [];
@@ -54,7 +55,9 @@ function checkFrontmatter(file: string, source: string) {
     report(file, "frontmatter: tags must be a list of strings");
   if ("lang" in fm && !LANGS.includes(fm.lang as (typeof LANGS)[number]))
     report(file, `frontmatter: lang must be one of ${LANGS.join(", ")}`);
-  if ("draft" in fm && typeof fm.draft !== "boolean") report(file, "frontmatter: draft must be true or false");
+  if ("status" in fm && !STATUSES.includes(fm.status as (typeof STATUSES)[number]))
+    report(file, `frontmatter: status must be one of ${STATUSES.join(", ")}`);
+  if ("draft" in fm) report(file, 'frontmatter: "draft" is replaced by "status: draft"');
 }
 
 async function exists(path: string) {

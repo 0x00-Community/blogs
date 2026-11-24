@@ -37,7 +37,7 @@ authors: [your-author-id]  # must match authors/<id>.yml
 tags: [rust, gc]          # optional
 summary: One sentence shown in listings.
 lang: en                  # en | zh-CN
-draft: false              # optional
+status: draft             # draft | staged | release | archive
 ---
 
 Markdown (with GFM tables, task lists…) plus JSX when you need it.
@@ -51,7 +51,7 @@ bun install
 bun run check
 ```
 
-The check validates author files, that every post author exists, folder names, required frontmatter fields, that every post is `.mdx`,
+The check validates author files, that every post author exists, folder names, required frontmatter fields (including `status`), that every post is `.mdx`,
 that relative links and images exist inside the post folder, and that the MDX compiles.
 
 ## 🤝 Contributing
