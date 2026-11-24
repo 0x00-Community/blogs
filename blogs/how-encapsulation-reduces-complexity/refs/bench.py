@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Stress-test the four relays: peak RSS, median RSS and CPU of the server process.
+"""Stress-test the five relays: peak RSS, median RSS and CPU of the server process.
 
-Builds relay.go, relay_tokio.rs, relay_std.rs and relay_poll.rs from this folder,
+Builds relay.go, relay_tokio.rs, relay_std.rs, relay_single.rs and relay_jw238.rs
+from this folder,
 then for each scenario and each relay:
   1. starts the server,
   2. connects 2 * pairs clients and waits for them to be paired,
@@ -44,6 +45,17 @@ tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.30"
 tungstenite = "0.30"
 
+# relay_std.rs and relay_single.rs were written as edition 2021 crates
+[[bin]]
+name = "relay_std"
+path = "src/bin/relay_std.rs"
+edition = "2021"
+
+[[bin]]
+name = "relay_single"
+path = "src/bin/relay_single.rs"
+edition = "2021"
+
 [profile.release]
 debug = false
 """
@@ -53,11 +65,33 @@ class Relay(Enum):
     GO = "relay.go"
     TOKIO = "relay_tokio.rs"
     STD = "relay_std.rs"
-    POLL = "relay_poll.rs"
+    SINGLE = "relay_single.rs"
+    JW238 = "relay_jw238.rs"
 
     @property
     def stem(self) -> str:
         return Path(self.value).stem
+
+    @property
+    def rust(self) -> bool:
+        return self is not Relay.GO
+
+    def source(self, port: int) -> str:
+        """Source with a hard-coded listen address rewritten to the bench port."""
+        src = (HERE / self.value).read_text()
+        for addr in ("0.0.0.0:8080", "0.0.0.0:9000"):
+            src = src.replace(f'"{addr}"', f'"127.0.0.1:{port}"')
+        return src
+
+    def argv(self, binary: Path, port: int) -> list[str]:
+        """Command line; relays that take the address as an argument get it here."""
+        match self:
+            case Relay.GO:
+                return [str(binary), "-addr", f"127.0.0.1:{port}"]
+            case Relay.STD | Relay.SINGLE:
+                return [str(binary), f"127.0.0.1:{port}"]
+            case _:
+                return [str(binary)]
 
 
 @dataclass
@@ -83,20 +117,19 @@ def build(build_dir: Path, port: int) -> dict[Relay, Path]:
     (rust / "src" / "bin").mkdir(parents=True, exist_ok=True)
     (rust / "Cargo.toml").write_text(CARGO_TOML)
     (rust / "src" / "lib.rs").write_text("")
-    for r in (Relay.TOKIO, Relay.STD, Relay.POLL):
-        src = (HERE / r.value).read_text().replace("0.0.0.0:8080", f"127.0.0.1:{port}")
-        (rust / "src" / "bin" / r.value).write_text(src)
+    for r in filter(lambda r: r.rust, Relay):
+        (rust / "src" / "bin" / r.value).write_text(r.source(port))
     subprocess.run(["cargo", "build", "--release", "-q"], cwd=rust, check=True)
 
     go = build_dir / "go"
     go.mkdir(parents=True, exist_ok=True)
-    (go / "main.go").write_text((HERE / Relay.GO.value).read_text().replace('":8080"', f'"127.0.0.1:{port}"'))
+    (go / "main.go").write_text(Relay.GO.source(port))
     if not (go / "go.mod").exists():
         subprocess.run(["go", "mod", "init", "relaybench"], cwd=go, check=True, capture_output=True)
         subprocess.run(["go", "get", "github.com/gorilla/websocket@v1.5.3"], cwd=go, check=True, capture_output=True)
     subprocess.run(["go", "build", "-o", "relay_go", "."], cwd=go, check=True)
 
-    bins = {r: rust / "target" / "release" / r.stem for r in (Relay.TOKIO, Relay.STD, Relay.POLL)}
+    bins = {r: rust / "target" / "release" / r.stem for r in Relay if r.rust}
     bins[Relay.GO] = go / "relay_go"
     return bins
 
@@ -112,7 +145,7 @@ class Client:
 
     @classmethod
     async def connect(cls, port: int) -> "Client":
-        ws = await connect(f"ws://127.0.0.1:{port}/", compression=None, max_size=None, close_timeout=1)
+        ws = await connect(f"ws://127.0.0.1:{port}/ws", compression=None, max_size=None, close_timeout=1)
         return cls(ws)
 
     async def send(self, payload: bytes, msgs: int) -> None:
@@ -180,7 +213,7 @@ async def sample(proc: Proc, out: list[int], stop: asyncio.Event, every: float) 
 
 
 async def bench_one(relay: Relay, binary: Path, port: int, sc: Scenario, timeout: float) -> Result:
-    server = subprocess.Popen([binary], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    server = subprocess.Popen(relay.argv(binary, port), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     proc = Proc(server.pid)
     clients: list[Client] = []
     try:

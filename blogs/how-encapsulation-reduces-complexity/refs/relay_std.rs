@@ -1,248 +1,350 @@
-//! std threads only: no tokio, no poll(2). One acceptor thread plus a fixed pool of
-//! workers (one per CPU). std cannot tell us which socket is ready, so every thread
-//! scans its non-blocking sockets and backs off (sleeps) while nothing moves.
+//! WebSocket 1:1 中转服务器，只用标准库。
 //!
-//! The five lifetimes:
-//!   'rt1, 'rt2     the two `Ws` owned by a `Pair`
-//!   'flow1, 'flow2 the two `Flow` fields of that `Pair`
-//!   'pipe          the `Pair` itself, from the moment it enters a worker until it is closed
-//! They are no longer borrows on a stack: they are entries in a worker's Vec.
+//! 线程模型：
+//!   main 线程         : accept 循环，每个新连接 spawn 一个握手线程
+//!   握手线程(每连接)  : 完成 HTTP Upgrade 后把 TcpStream 通过 mpsc 交给 Lobby
+//!   Lobby 线程(1 个)  : 配对。持有最多一个等待者；定期探活，死掉的等待者直接丢弃
+//!   Pair 线程(每对)   : thread::scope 里开两个 pump 线程(A->B, B->A)，scope 结束 = 两个方向都已退出
+//!
+//! 断开：任一 pump 退出时 shutdown(Both) 两个 socket，另一个 pump 阻塞中的 read 立即返回 EOF/错误而退出；
+//! scope 保证两个线程都 join 后才 drop 两个 TcpStream，不留悬挂连接或线程。
 
-use std::io::ErrorKind::WouldBlock;
-use std::mem;
-use std::net::{TcpListener, TcpStream};
-use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
+use std::io::{self, BufReader, Read, Write};
+use std::net::{Shutdown, TcpListener, TcpStream};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-use tungstenite::handshake::server::{NoCallback, ServerHandshake};
-use tungstenite::handshake::{HandshakeError, MidHandshake};
-use tungstenite::{accept, Error, Message, WebSocket};
+const MAX_PAYLOAD: u64 = 16 << 20;
+const MAX_HEADER: usize = 8 << 10;
+const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+const PROBE_INTERVAL: Duration = Duration::from_secs(1);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
-type Ws = WebSocket<TcpStream>;
-type Handshake = MidHandshake<ServerHandshake<TcpStream, NoCallback>>;
+// ---------------------------------------------------------------- SHA-1 / Base64
 
-/// Sleeps longer and longer while a scan moves nothing; the price of not having poll(2).
-/// The cap is also the worst extra latency a message can see.
-struct Backoff(Duration);
+struct Sha1 {
+    h: [u32; 5],
+}
 
-impl Backoff {
-    const MIN: Duration = Duration::from_micros(50);
-    const MAX: Duration = Duration::from_millis(5);
-
-    fn new() -> Self {
-        Backoff(Duration::ZERO)
-    }
-
-    fn after(&mut self, moved: bool) {
-        if moved {
-            self.0 = Duration::ZERO;
-            return;
+impl Sha1 {
+    fn digest(data: &[u8]) -> [u8; 20] {
+        let mut s = Sha1 { h: [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0] };
+        let mut msg = data.to_vec();
+        let bits = (data.len() as u64).wrapping_mul(8);
+        msg.push(0x80);
+        while msg.len() % 64 != 56 {
+            msg.push(0);
         }
-        self.0 = (self.0 * 2).clamp(Self::MIN, Self::MAX);
-        thread::sleep(self.0);
+        msg.extend_from_slice(&bits.to_be_bytes());
+        msg.chunks_exact(64).for_each(|c| s.block(c));
+        let mut out = [0u8; 20];
+        out.chunks_exact_mut(4).zip(s.h).for_each(|(o, h)| o.copy_from_slice(&h.to_be_bytes()));
+        out
+    }
+
+    fn block(&mut self, chunk: &[u8]) {
+        let mut w = [0u32; 80];
+        for (i, c) in chunk.chunks_exact(4).enumerate() {
+            w[i] = u32::from_be_bytes([c[0], c[1], c[2], c[3]]);
+        }
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+        let [mut a, mut b, mut c, mut d, mut e] = self.h;
+        for (i, wi) in w.iter().enumerate() {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | (!b & d), 0x5A827999),
+                20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
+                _ => (b ^ c ^ d, 0xCA62C1D6),
+            };
+            let t = a.rotate_left(5).wrapping_add(f).wrapping_add(e).wrapping_add(k).wrapping_add(*wi);
+            (e, d, c, b, a) = (d, c, b.rotate_left(30), a, t);
+        }
+        for (h, v) in self.h.iter_mut().zip([a, b, c, d, e]) {
+            *h = h.wrapping_add(v);
+        }
     }
 }
 
-fn would_block(e: &Error) -> bool {
-    matches!(e, Error::Io(e) if e.kind() == WouldBlock)
-}
+struct Base64<'a>(&'a [u8]);
 
-/// One direction. Holds at most one message that has not been flushed yet.
-enum Flow {
-    Read,
-    Write(Message),
-    Flush,
-}
-
-enum Step {
-    Moved,
-    Blocked,
-    Ended,
-}
-
-impl Flow {
-    /// One atomic step: moves at most one message from src to dst.
-    fn step(&mut self, src: &mut Ws, dst: &mut Ws) -> Step {
-        loop {
-            match mem::replace(self, Flow::Read) {
-                Flow::Read => match src.read() {
-                    Ok(m) if m.is_text() || m.is_binary() => *self = Flow::Write(m),
-                    Ok(Message::Close(_)) => return Step::Ended,
-                    Ok(_) => {} // Ping/Pong are answered by tungstenite itself
-                    Err(e) if would_block(&e) => return Step::Blocked,
-                    Err(_) => return Step::Ended,
-                },
-                Flow::Write(m) => match dst.write(m) {
-                    // On WouldBlock the frame is kept in tungstenite's write buffer.
-                    Ok(()) => *self = Flow::Flush,
-                    Err(e) if would_block(&e) => *self = Flow::Flush,
-                    Err(_) => return Step::Ended,
-                },
-                Flow::Flush => match dst.flush() {
-                    Ok(()) => return Step::Moved,
-                    Err(e) if would_block(&e) => {
-                        *self = Flow::Flush;
-                        return Step::Blocked;
-                    }
-                    Err(_) => return Step::Ended,
-                },
+impl From<Base64<'_>> for String {
+    fn from(Base64(data): Base64<'_>) -> String {
+        const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+        for c in data.chunks(3) {
+            let n = (u32::from(c[0]) << 16)
+                | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
+                | u32::from(*c.get(2).unwrap_or(&0));
+            for i in 0..4 {
+                out.push(if i <= c.len() { T[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
             }
         }
+        out
     }
 }
 
-/// The pipe: owns both connections and both flows.
+// ---------------------------------------------------------------- Handshake
+
+struct Handshake<'a>(&'a TcpStream);
+
+impl Handshake<'_> {
+    /// 逐字节读到 \r\n\r\n，避免把客户端后续的帧数据吞进缓冲区。
+    fn accept(self) -> io::Result<()> {
+        let mut sock = self.0;
+        sock.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
+        let mut req = Vec::with_capacity(512);
+        let mut byte = [0u8; 1];
+        while !req.ends_with(b"\r\n\r\n") {
+            if req.len() >= MAX_HEADER || sock.read(&mut byte)? == 0 {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            req.push(byte[0]);
+        }
+        sock.set_read_timeout(None)?;
+
+        let req = std::str::from_utf8(&req).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+        let key = req
+            .lines()
+            .filter_map(|l| l.split_once(':'))
+            .find(|(k, _)| k.trim().eq_ignore_ascii_case("sec-websocket-key"))
+            .map(|(_, v)| v.trim())
+            .ok_or(io::ErrorKind::InvalidData)?;
+
+        let accept: String = Base64(&Sha1::digest(format!("{key}{WS_GUID}").as_bytes())).into();
+        write!(
+            sock,
+            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+        )
+    }
+}
+
+// ---------------------------------------------------------------- Frame
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Opcode {
+    Continuation = 0x0,
+    Text = 0x1,
+    Binary = 0x2,
+    Close = 0x8,
+    Ping = 0x9,
+    Pong = 0xA,
+}
+
+impl TryFrom<u8> for Opcode {
+    type Error = io::Error;
+    fn try_from(v: u8) -> io::Result<Self> {
+        Ok(match v {
+            0x0 => Opcode::Continuation,
+            0x1 => Opcode::Text,
+            0x2 => Opcode::Binary,
+            0x8 => Opcode::Close,
+            0x9 => Opcode::Ping,
+            0xA => Opcode::Pong,
+            _ => return Err(io::ErrorKind::InvalidData.into()),
+        })
+    }
+}
+
+struct Frame {
+    fin: bool,
+    op: Opcode,
+    payload: Vec<u8>,
+}
+
+impl Frame {
+    /// 1001 Going Away：对端异常消失时发给存活方。
+    fn going_away() -> Self {
+        Frame { fin: true, op: Opcode::Close, payload: 1001u16.to_be_bytes().to_vec() }
+    }
+
+    fn read(r: &mut impl Read) -> io::Result<Self> {
+        let mut h = [0u8; 2];
+        r.read_exact(&mut h)?;
+        let (fin, op, masked) = (h[0] & 0x80 != 0, Opcode::try_from(h[0] & 0x0F)?, h[1] & 0x80 != 0);
+        let len = match h[1] & 0x7F {
+            126 => {
+                let mut b = [0u8; 2];
+                r.read_exact(&mut b)?;
+                u64::from(u16::from_be_bytes(b))
+            }
+            127 => {
+                let mut b = [0u8; 8];
+                r.read_exact(&mut b)?;
+                u64::from_be_bytes(b)
+            }
+            n => u64::from(n),
+        };
+        // RFC 6455：客户端帧必须带掩码
+        if !masked || len > MAX_PAYLOAD {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        let mut mask = [0u8; 4];
+        r.read_exact(&mut mask)?;
+        let mut payload = vec![0u8; usize::try_from(len).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?];
+        r.read_exact(&mut payload)?;
+        payload.iter_mut().zip(mask.iter().cycle()).for_each(|(b, m)| *b ^= m);
+        Ok(Frame { fin, op, payload })
+    }
+}
+
+impl From<&Frame> for Vec<u8> {
+    /// 服务器 -> 客户端：不加掩码，头和负载拼成一块，单次 write_all。
+    fn from(f: &Frame) -> Vec<u8> {
+        let len = f.payload.len();
+        let mut out = Vec::with_capacity(len + 10);
+        out.push(u8::from(f.fin) << 7 | f.op as u8);
+        match len {
+            0..=125 => out.push(len as u8),
+            126..=0xFFFF => {
+                out.push(126);
+                out.extend_from_slice(&(len as u16).to_be_bytes());
+            }
+            _ => {
+                out.push(127);
+                out.extend_from_slice(&(len as u64).to_be_bytes());
+            }
+        }
+        out.extend_from_slice(&f.payload);
+        out
+    }
+}
+
+// ---------------------------------------------------------------- Peer / Pair
+
+/// 一个已升级的连接。读只发生在自己的 pump 线程；
+/// 写可能来自两个线程（对端 pump 转发数据 + 自己 pump 回 pong/close），用 wlock 保证帧不交错。
+struct Peer {
+    sock: TcpStream,
+    wlock: Mutex<()>,
+}
+
+impl From<TcpStream> for Peer {
+    fn from(sock: TcpStream) -> Self {
+        Peer { sock, wlock: Mutex::new(()) }
+    }
+}
+
+impl Peer {
+    fn send(&self, f: &Frame) -> io::Result<()> {
+        let buf: Vec<u8> = f.into();
+        let _g = self.wlock.lock().unwrap_or_else(|e| e.into_inner());
+        (&self.sock).write_all(&buf)
+    }
+
+    /// 不需要 wlock：shutdown 会让另一个线程阻塞中的 read/write 立刻失败返回。
+    fn kill(&self) {
+        let _ = self.sock.shutdown(Shutdown::Both);
+    }
+
+    /// 单向泵：读 self，写 to。返回时保证两端都已 shutdown。
+    fn pump(&self, to: &Peer) {
+        let mut r = BufReader::new(&self.sock);
+        let farewell = loop {
+            let Ok(f) = Frame::read(&mut r) else { break Frame::going_away() };
+            let ok = match f.op {
+                Opcode::Ping => self.send(&Frame { fin: true, op: Opcode::Pong, payload: f.payload }),
+                Opcode::Pong => Ok(()),
+                Opcode::Close => {
+                    let _ = self.send(&f); // 回 close 完成本端关闭握手
+                    break f; // 原样把 close（含状态码/原因）转给对端
+                }
+                Opcode::Text | Opcode::Binary | Opcode::Continuation => to.send(&f),
+            };
+            if ok.is_err() {
+                break Frame::going_away();
+            }
+        };
+        let _ = to.send(&farewell);
+        self.kill();
+        to.kill();
+    }
+}
+
 struct Pair {
-    a: Ws,
-    b: Ws,
-    a2b: Flow,
-    b2a: Flow,
+    a: Peer,
+    b: Peer,
 }
 
 impl Pair {
-    /// Most messages one pair may move per scan, so a busy pair cannot starve the others.
-    const BUDGET: usize = 64;
-
-    fn new(a: Ws, b: Ws) -> Self {
-        Pair { a, b, a2b: Flow::Read, b2a: Flow::Read }
+    /// scope 返回 = 两个 pump 都已 join；随后 self drop，两个 fd 关闭。
+    fn run(self) {
+        thread::scope(|s| {
+            s.spawn(|| self.a.pump(&self.b));
+            s.spawn(|| self.b.pump(&self.a));
+        });
     }
+}
 
-    /// Ping-pong: one step of a2b, one step of b2a, until both are blocked or the budget is spent.
-    /// None once the pipe has ended, otherwise whether anything moved.
-    fn relay(&mut self) -> Option<bool> {
-        let (mut moved, mut idle, mut a2b) = (0, 0, true);
-        while idle < 2 && moved < Self::BUDGET {
-            let step = match a2b {
-                true => self.a2b.step(&mut self.a, &mut self.b),
-                false => self.b2a.step(&mut self.b, &mut self.a),
-            };
-            match step {
-                Step::Ended => return None,
-                Step::Moved => (moved, idle) = (moved + 1, 0),
-                Step::Blocked => idle += 1,
-            }
-            a2b = !a2b;
-        }
-        Some(moved > 0)
-    }
+// ---------------------------------------------------------------- Lobby
 
-    /// Delivers what the flows still hold, then closes both sides. Blocking from here on,
-    /// with a timeout, so a dead or stalled peer cannot hold the worker for long.
-    fn close(mut self) {
-        for ws in [&self.a, &self.b] {
-            let _ = ws.get_ref().set_nonblocking(false);
-            let _ = ws.get_ref().set_write_timeout(Some(Duration::from_secs(1)));
+struct Lobby {
+    rx: Receiver<TcpStream>,
+    waiting: Option<TcpStream>,
+}
+
+trait Alive {
+    fn alive(&self) -> bool;
+}
+
+impl Alive for TcpStream {
+    /// 非阻塞 peek：Ok(0) = 对端已 FIN；WouldBlock / Ok(n>0) = 仍在线。
+    fn alive(&self) -> bool {
+        if self.set_nonblocking(true).is_err() {
+            return false;
         }
-        if let Flow::Write(m) = mem::replace(&mut self.a2b, Flow::Read) {
-            let _ = self.b.write(m);
-        }
-        if let Flow::Write(m) = mem::replace(&mut self.b2a, Flow::Read) {
-            let _ = self.a.write(m);
-        }
-        for ws in [&mut self.a, &mut self.b] {
-            let _ = ws.close(None);
-            let _ = ws.flush();
+        let r = self.peek(&mut [0u8; 1]);
+        let _ = self.set_nonblocking(false);
+        match r {
+            Ok(n) => n > 0,
+            Err(e) => e.kind() == io::ErrorKind::WouldBlock,
         }
     }
 }
 
-/// A worker owns many pairs and scans them all, round and round.
-fn worker(rx: Receiver<Pair>) {
-    let mut pairs: Vec<Pair> = Vec::new();
-    let mut backoff = Backoff::new();
-    loop {
-        // Nothing to do: block on the channel instead of spinning.
-        if pairs.is_empty() {
-            match rx.recv() {
-                Ok(p) => pairs.push(p),
-                Err(_) => return,
-            }
-        }
+impl Lobby {
+    fn run(mut self) {
         loop {
-            match rx.try_recv() {
-                Ok(p) => pairs.push(p),
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => return,
-            }
-        }
-        let mut moved = false;
-        let mut i = 0;
-        while i < pairs.len() {
-            match pairs[i].relay() {
-                None => pairs.swap_remove(i).close(),
-                Some(m) => {
-                    moved |= m;
-                    i += 1;
-                }
-            }
-        }
-        backoff.after(moved);
-    }
-}
-
-/// Alive unless the peer has sent FIN or reset. peek() leaves any pending data unread.
-fn alive(ws: &Ws) -> bool {
-    match ws.get_ref().peek(&mut [0u8; 1]) {
-        Ok(n) => n > 0,
-        Err(e) => e.kind() == WouldBlock,
-    }
-}
-
-/// The acceptor: accepts, finishes handshakes, pairs neighbours, deals pairs out to the workers.
-fn main() -> std::io::Result<()> {
-    let listener = TcpListener::bind("0.0.0.0:8080")?;
-    listener.set_nonblocking(true)?;
-    let workers: Vec<Sender<Pair>> = (0..thread::available_parallelism()?.get())
-        .map(|_| {
-            let (tx, rx) = channel();
-            thread::spawn(move || worker(rx));
-            tx
-        })
-        .collect();
-    let mut next = 0;
-    let mut handshakes: Vec<Handshake> = Vec::new();
-    let mut lobby: Option<Ws> = None;
-    let mut backoff = Backoff::new();
-    loop {
-        let mut moved = false;
-        let mut arrived: Vec<Ws> = Vec::new();
-        loop {
-            match listener.accept() {
-                Ok((stream, _)) => {
-                    moved = true;
-                    stream.set_nonblocking(true)?;
-                    match accept(stream) {
-                        Ok(ws) => arrived.push(ws),
-                        Err(HandshakeError::Interrupted(mid)) => handshakes.push(mid),
-                        Err(HandshakeError::Failure(_)) => {}
+            match self.rx.recv_timeout(PROBE_INTERVAL) {
+                Ok(s) => match self.waiting.take().filter(TcpStream::alive) {
+                    Some(w) => {
+                        thread::spawn(move || Pair { a: w.into(), b: s.into() }.run());
                     }
+                    None => self.waiting = Some(s),
+                },
+                // 等待者在配对前断开：定期探活，死了就 drop（关闭 fd）
+                Err(RecvTimeoutError::Timeout) => {
+                    self.waiting = self.waiting.take().filter(TcpStream::alive);
                 }
-                Err(e) if e.kind() == WouldBlock => break,
-                Err(e) => return Err(e),
+                Err(RecvTimeoutError::Disconnected) => return,
             }
         }
-        for mid in mem::take(&mut handshakes) {
-            match mid.handshake() {
-                Ok(ws) => arrived.push(ws),
-                Err(HandshakeError::Interrupted(mid)) => handshakes.push(mid),
-                Err(HandshakeError::Failure(_)) => {}
-            }
-        }
-        // A waiter that hung up leaves the lobby instead of being paired.
-        if lobby.as_ref().is_some_and(|ws| !alive(ws)) {
-            lobby = None;
-        }
-        for ws in arrived {
-            moved = true;
-            match lobby.take() {
-                Some(waiting) => {
-                    let _ = workers[next].send(Pair::new(waiting, ws));
-                    next = (next + 1) % workers.len();
-                }
-                None => lobby = Some(ws),
-            }
-        }
-        backoff.after(moved);
     }
+}
+
+// ---------------------------------------------------------------- main
+
+fn main() -> io::Result<()> {
+    let addr = std::env::args().nth(1).unwrap_or_else(|| "0.0.0.0:9001".into());
+    let listener = TcpListener::bind(&addr)?;
+    eprintln!("ws-relay listening on {addr}");
+
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || Lobby { rx, waiting: None }.run());
+
+    for sock in listener.incoming().flatten() {
+        let tx = tx.clone();
+        thread::spawn(move || {
+            let _ = sock.set_nodelay(true);
+            let _ = sock.set_write_timeout(Some(WRITE_TIMEOUT));
+            if Handshake(&sock).accept().is_ok() {
+                let _ = tx.send(sock);
+            }
+        });
+    }
+    Ok(())
 }
