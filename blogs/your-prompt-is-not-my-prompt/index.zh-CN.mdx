@@ -308,7 +308,7 @@ A 的断开方式分别用 FIN（正常关 TCP、不发关闭帧）和 RST（直
 
 ### 压测：内存和 CPU
 
-脚本把五个版本都编译成 release，启动服务器，用 Python 的 `websockets` 起一批客户端，两两配对后同时双向互发，期间每 10ms 从 `/proc` 采一次服务器进程的 RSS，并记录整段流量消耗的 CPU 时间。
+压测脚本（见附录）把五个版本都编译成 release，启动服务器，用 Python 的 `websockets` 起一批客户端，两两配对后同时双向互发，期间每 10ms 从 `/proc` 采一次服务器进程的 RSS，并记录整段流量消耗的 CPU 时间。
 
 在一台 16 核的 Linux 机器上跑一次的结果（release 构建；每轮都确认所有消息收齐）：
 
@@ -383,3 +383,12 @@ AI 能写出每一种封装。**AI 不会告诉你的是：哪些东西本来就
 > We think too much and feel too little. More than machinery, we need humanity. More than cleverness, we need kindness and gentleness.
 >
 > —— 查理·卓别林，《大独裁者》（*The Great Dictator*，1940）终场演讲
+
+## 附录：压测脚本
+
+<details>
+<summary>点击展开</summary>
+
+![[refs/bench.py]]
+
+</details>

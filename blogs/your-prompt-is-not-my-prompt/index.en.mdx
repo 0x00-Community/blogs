@@ -308,9 +308,7 @@ So the "bad" in this post is not that AI gets it wrong. **It gets it right, and 
 
 ### Benchmark: memory and CPU
 
-The script below builds all five in release mode, starts the server, opens a batch of clients with Python's `websockets`, pairs them up and has both sides send at once, sampling the server's RSS from `/proc` every 10ms and recording the CPU time spent on the whole run.
-
-![[refs/bench.py]]
+The benchmark script (see the appendix) builds all five in release mode, starts the server, opens a batch of clients with Python's `websockets`, pairs them up and has both sides send at once, sampling the server's RSS from `/proc` every 10ms and recording the CPU time spent on the whole run.
 
 One run on a 16-core Linux machine (release builds; every round checked that all messages arrived):
 
@@ -383,3 +381,12 @@ AI can write every kind of encapsulation. **What AI will not tell you is which t
 > We think too much and feel too little. More than machinery, we need humanity. More than cleverness, we need kindness and gentleness.
 >
 > — Charlie Chaplin, *The Great Dictator* (1940), the final speech
+
+## Appendix: the benchmark script
+
+<details>
+<summary>Click to expand</summary>
+
+![[refs/bench.py]]
+
+</details>
