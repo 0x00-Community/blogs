@@ -114,7 +114,7 @@ The four prompts cover the first two levels:
 
 There is a fifth one, the human-designed version, for the third level, the **masterpiece solution**. AI wrote it too, but a human set the architecture first: "there are five lifetimes underneath", "one thread, one Future per pair, the two directions take turns, no tokio". Then AI wrote it to that design.
 
-The full sources of all five, the test script and the benchmark script are in the post's `refs/` folder.
+The body shows only the core excerpts. The full sources of all five, the test script and the benchmark script are in the appendix at the end, collapsed by default.
 
 ## 2. Under the code: five lifetimes
 
@@ -154,7 +154,11 @@ One by one: where do the five lifetimes end up in each program? AI chose the str
 >
 > Model: a Claude Opus 5.5 (`claude-opus-5-5`) subagent. Preceded by the requirement from section 1 and followed by the common closing instructions.
 
-![[refs/relay.go]]
+![[refs/relay.go#L39-L50]]
+
+![[refs/relay.go#L142-L158]]
+
+![[refs/relay.go#L166-L205]]
 
 The five lifetimes in the Go version:
 
@@ -176,7 +180,9 @@ The most telling piece is the `paired` field. The waiter disconnecting and the n
 >
 > Model: a Claude Opus 5.5 (`claude-opus-5-5`) subagent. Preceded by the requirement from section 1 and followed by the common closing instructions.
 
-![[refs/relay_tokio.rs]]
+![[refs/relay_tokio.rs#L68-L102]]
+
+![[refs/relay_tokio.rs#L121-L142]]
 
 The five lifetimes in the tokio version:
 
@@ -203,7 +209,9 @@ Go and tokio are the popular solution: search for "Go WebSocket relay" or "tokio
 
 Next comes human tuning. Prompts 3 and 4 no longer just name a stack; they add constraints: no tokio, and then fully single-threaded. The constraints push AI out of the community default, so it has to handle the protocol and schedule the connections itself.
 
-![[refs/relay_std.rs]]
+![[refs/relay_std.rs#L268-L281]]
+
+![[refs/relay_std.rs#L294-L307]]
 
 Without tokio, this agent didn't use tungstenite either: SHA-1, Base64, the HTTP handshake and framing are all hand-written, about 190 lines. The relay part is about 130 lines:
 
@@ -227,7 +235,11 @@ The `peek` probe has a blind spot too: if A sends a message and then disconnects
 >
 > Model: a Claude Opus 5.5 (`claude-opus-5-5`) subagent. Preceded by the requirement from section 1 and followed by the common closing instructions.
 
-![[refs/relay_single.rs]]
+![[refs/relay_single.rs#L284-L292]]
+
+![[refs/relay_single.rs#L406-L409]]
+
+![[refs/relay_single.rs#L579-L600]]
 
 The fourth prompt added just "fully single-threaded". What came back does have exactly one thread, and passes every test:
 
@@ -253,7 +265,7 @@ But nowhere in those 541 lines is "these five lifetimes live and die together" s
 
 Also one thread, one `poll(2)`, no tokio. The difference is that a human told AI first: there are five lifetimes underneath, they live and die together, so each pair should have exactly one execution unit. That step is not tuning and not one more technical constraint: it is an architectural judgement.
 
-![[refs/relay_jw238.rs]]
+![[refs/relay_jw238.rs#L338-L348]]
 
 - **The whole server is one thread.** One `poll(2)` waits on every socket, and an executor of a few dozen lines polls the Futures that were woken. The lobby is an `Rc<RefCell<_>>`; tasks borrow the reactor and the lobby, with no `'static` anywhere.
 - **Each pair is a single Future.** Two connections, two directions and a "whose turn" flag all live in the one Future that `relay` returns.
@@ -288,9 +300,7 @@ Reading the code was about structure; the analysis is about behaviour and cost: 
 
 ### Correctness: all four are right
 
-I ran the same behaviour tests against all five:
-
-![[refs/test.py]]
+I ran the same behaviour tests against all five (the test script is in the appendix):
 
 | Relay | B after A drops | A drops in the lobby, then B and C connect | Message A sent before pairing | Both send 500 × 64KB, A drops after receiving all; how many of A's does B get (5 rounds) |
 | --- | --- | --- | --- | --- |
@@ -382,10 +392,54 @@ AI can write every kind of encapsulation. **What AI will not tell you is which t
 >
 > — Charlie Chaplin, *The Great Dictator* (1940), the final speech
 
-## Appendix: the benchmark script
+## Appendix: full source
+
+The body only shows the core excerpts. The full sources are below, collapsed by default.
 
 <details>
-<summary>Click to expand</summary>
+<summary>AI solution 1: the Go version</summary>
+
+![[refs/relay.go]]
+
+</details>
+
+<details>
+<summary>AI solution 2: the tokio version</summary>
+
+![[refs/relay_tokio.rs]]
+
+</details>
+
+<details>
+<summary>AI solution 3: the std version</summary>
+
+![[refs/relay_std.rs]]
+
+</details>
+
+<details>
+<summary>AI solution 4: the single-threaded version</summary>
+
+![[refs/relay_single.rs]]
+
+</details>
+
+<details>
+<summary>Human solution: the human-designed version</summary>
+
+![[refs/relay_jw238.rs]]
+
+</details>
+
+<details>
+<summary>Behaviour tests</summary>
+
+![[refs/test.py]]
+
+</details>
+
+<details>
+<summary>Benchmark script</summary>
 
 ![[refs/bench.py]]
 
