@@ -19,7 +19,7 @@
 
 ```yaml
 name: 你的名字
-email: you@example.com
+email: you@example.com     # 多个邮箱写成列表
 github: https://github.com/你的-github-id
 bio: |
   一段自我介绍。
