@@ -12,12 +12,15 @@ const AUTHOR_FIELDS = ["name", "email", "github", "bio"] as const;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const GITHUB = /^https:\/\/github\.com\/[A-Za-z0-9-]+\/?$/;
 const authorIds = new Set<string>();
-const ENTRY = "index.mdx";
+const ENTRY = /^index\.([A-Za-z-]+)\.mdx$/;
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const LANGS = ["en", "zh-CN"] as const;
 const ASSETS = /\.(png|jpe?g|gif|webp|avif|svg|mp4|webm)$/i;
-const REQUIRED = ["title", "date", "authors", "summary", "lang"] as const;
+const REFS = /\.(rs|go|c|h|cc|cpp|hpp|zig|py|js|ts|sh|toml|json|ya?ml)$/i;
+const EMBED = /!?\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]/g;
+const STATUSES = ["draft", "staged", "release", "archive"] as const;
+const REQUIRED = ["title", "date", "authors", "summary", "lang", "status"] as const;
 
 type Problem = { file: string; message: string };
 const problems: Problem[] = [];
@@ -27,7 +30,7 @@ const report = (file: string, message: string) =>
 const isNonEmptyString = (v: unknown): v is string =>
   typeof v === "string" && v.trim().length > 0;
 
-function checkFrontmatter(file: string, source: string) {
+function checkFrontmatter(file: string, source: string, lang: string) {
   const match = source.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/);
   if (!match) return report(file, "missing YAML frontmatter at top of file");
   let fm: Record<string, unknown>;
@@ -54,11 +57,23 @@ function checkFrontmatter(file: string, source: string) {
     report(file, "frontmatter: tags must be a list of strings");
   if ("lang" in fm && !LANGS.includes(fm.lang as (typeof LANGS)[number]))
     report(file, `frontmatter: lang must be one of ${LANGS.join(", ")}`);
-  if ("draft" in fm && typeof fm.draft !== "boolean") report(file, "frontmatter: draft must be true or false");
+  else if ("lang" in fm && fm.lang !== lang) report(file, `frontmatter: lang "${fm.lang}" does not match file name (${lang})`);
+  if ("status" in fm && !STATUSES.includes(fm.status as (typeof STATUSES)[number]))
+    report(file, `frontmatter: status must be one of ${STATUSES.join(", ")}`);
+  if ("draft" in fm) report(file, 'frontmatter: "draft" is replaced by "status: draft"');
 }
 
 async function exists(path: string) {
   return stat(path).then(() => true, () => false);
+}
+
+async function checkEmbeds(file: string, source: string, used: Set<string>) {
+  for (const [, ref] of source.matchAll(EMBED)) {
+    const target = resolve(dirname(file), ref.trim());
+    if (!target.startsWith(dirname(file) + "/")) report(file, `"[[${ref}]]" points outside the post folder`);
+    else if (!(await exists(target))) report(file, `"[[${ref}]]" does not exist`);
+    else used.add(target);
+  }
 }
 
 async function checkLocalRefs(file: string, source: string) {
@@ -82,21 +97,36 @@ async function checkPost(dir: string) {
   const slug = dir.split("/").pop()!;
   if (!SLUG.test(slug)) report(dir, "folder name must be a kebab-case slug (a-z, 0-9, -)");
   const entries = await readdir(dir, { withFileTypes: true });
-  const file = join(dir, ENTRY);
-  if (!entries.some((e) => e.isFile() && e.name === ENTRY)) return report(dir, `missing ${ENTRY}`);
+  const posts: [string, string][] = [];
+  const refs: string[] = [];
   for (const e of entries) {
-    if (e.name === ENTRY) continue;
-    if (e.isDirectory()) {
-      if (e.name !== "assets") report(join(dir, e.name), 'only an "assets" sub-folder is allowed');
+    const entry = e.isFile() ? e.name.match(ENTRY) : null;
+    if (entry) {
+      if (LANGS.includes(entry[1] as (typeof LANGS)[number])) posts.push([join(dir, e.name), entry[1]]);
+      else report(join(dir, e.name), `language must be one of ${LANGS.join(", ")} — name it index.<lang>.mdx`);
+    } else if (e.isDirectory()) {
+      const [kind, allowed] = e.name === "assets" ? ["asset", ASSETS] : e.name === "refs" ? ["refs", REFS] : [];
+      if (!allowed) report(join(dir, e.name), 'only "assets" and "refs" sub-folders are allowed');
       else
-        for (const a of await readdir(join(dir, e.name), { recursive: true }))
-          if (!ASSETS.test(a) && !(await stat(join(dir, e.name, a))).isDirectory())
-            report(join(dir, e.name, a), "unsupported asset type");
-    } else if (e.name.endsWith(".md")) report(join(dir, e.name), "posts must be .mdx, not .md");
+        for (const a of await readdir(join(dir, e.name), { recursive: true })) {
+          const path = join(dir, e.name, a);
+          if ((await stat(path)).isDirectory()) continue;
+          if (!allowed.test(a)) report(path, `unsupported ${kind} file type`);
+          else if (kind === "refs") refs.push(path);
+        }
+    } else if (/\.mdx?$/.test(e.name)) report(join(dir, e.name), `posts must be named index.<lang>.mdx (${LANGS.join(", ")})`);
     else if (!ASSETS.test(e.name)) report(join(dir, e.name), "unexpected file; put images/videos in assets/");
   }
+  if (!posts.length) return report(dir, `missing index.<lang>.mdx (${LANGS.join(", ")})`);
+  const used = new Set<string>();
+  for (const [file, lang] of posts) await checkEntry(file, lang, used);
+  for (const r of refs) if (!used.has(r)) report(r, "file is not embedded by any post (![[refs/...]])");
+}
+
+async function checkEntry(file: string, lang: string, used: Set<string>) {
   const source = await readFile(file, "utf8");
-  checkFrontmatter(file, source);
+  checkFrontmatter(file, source, lang);
+  await checkEmbeds(file, source, used);
   await checkLocalRefs(file, source);
   try {
     await compile({ value: source, path: file }, { remarkPlugins: [remarkFrontmatter, remarkGfm] });
@@ -132,7 +162,7 @@ for (const e of await readdir(AUTHORS, { withFileTypes: true })) {
 
 for (const e of await readdir(BLOGS, { withFileTypes: true })) {
   if (e.isDirectory()) await checkPost(join(BLOGS, e.name));
-  else if (e.name !== ".gitkeep") report(join(BLOGS, e.name), "each post lives in its own folder: blogs/<slug>/index.mdx");
+  else if (e.name !== ".gitkeep") report(join(BLOGS, e.name), "each post lives in its own folder: blogs/<slug>/index.<lang>.mdx");
 }
 
 if (problems.length) {

@@ -1,0 +1,321 @@
+---
+title: 封装如何降低复杂度，AI 无法决策的是
+date: 2026-11-24
+authors: [jabberwocky238]
+tags: [architecture, golang, rust, websocket]
+summary: 一个 WebSocket 中转，底下是五个生命周期。AI 能写出每一种封装，但无法决策的是：哪几个生命周期该被封进同一个结构。
+lang: zh-CN
+status: draft
+---
+
+export const many = [
+  { relay: 'relay.go', idle: 46.3, peak: 48.4, median: 47.3, cpu: 0.18, threads: 19 },
+  { relay: 'relay_tokio.rs', idle: 264.3, peak: 275.5, median: 275.5, cpu: 0.18, threads: 17 },
+  { relay: 'relay_std.rs', idle: 261.5, peak: 263.6, median: 262.5, cpu: 5.95, threads: 17 },
+  { relay: 'relay_poll.rs', idle: 261.4, peak: 263.5, median: 262.5, cpu: 0.15, threads: 1 },
+]
+
+export const bulk = [
+  { relay: 'relay.go', idle: 10.0, peak: 11.6, median: 11.4, cpu: 1.00, threads: 15 },
+  { relay: 'relay_tokio.rs', idle: 16.7, peak: 66.8, median: 66.5, cpu: 0.53, threads: 17 },
+  { relay: 'relay_std.rs', idle: 15.6, peak: 29.8, median: 29.8, cpu: 0.80, threads: 17 },
+  { relay: 'relay_poll.rs', idle: 15.2, peak: 21.5, median: 21.5, cpu: 0.35, threads: 1 },
+]
+
+export const columns = [
+  ['idle', '空闲 RSS MiB', 1],
+  ['peak', '峰值 RSS MiB', 1],
+  ['median', '中位 RSS MiB', 1],
+  ['cpu', 'CPU 秒', 2],
+  ['threads', '线程数', 0],
+]
+
+export function BenchTable({ rows }) {
+  return (
+    <table>
+      <thead>
+        <tr>
+          <th>版本</th>
+          {columns.map(([key, label]) => <th key={key}>{label}</th>)}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => (
+          <tr key={r.relay}>
+            <td><code>{r.relay}</code></td>
+            {columns.map(([key, , digits]) => <td key={key} style={{ textAlign: 'right' }}>{r[key].toFixed(digits)}</td>)}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
+export function BarChart({ title, rows, metric, unit, digits }) {
+  const max = Math.max(...rows.map((r) => r[metric]))
+  return (
+    <figure style={{ margin: '1.5em 0' }}>
+      <figcaption style={{ fontWeight: 600, marginBottom: '0.5em' }}>{title}</figcaption>
+      {rows.map((r) => (
+        <div key={r.relay} style={{ display: 'flex', alignItems: 'center', gap: '0.75em', margin: '0.3em 0' }}>
+          <code style={{ flex: '0 0 9em' }}>{r.relay}</code>
+          <div style={{ flex: 1 }}>
+            <div style={{ width: `${(100 * r[metric]) / max}%`, minWidth: '2px', height: '1.1em', borderRadius: '3px', background: r.relay === 'relay_poll.rs' ? '#2f9e6e' : '#5b7fd6' }} />
+          </div>
+          <span style={{ flex: '0 0 6em', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{r[metric].toFixed(digits)} {unit}</span>
+        </div>
+      ))}
+    </figure>
+  )
+}
+
+# 封装如何降低复杂度，AI 无法决策的是
+
+先说结论：**封装不会消灭复杂度。好的封装，是把本该同生共死的几个生命周期装进同一个结构，让它们之间的约束由结构自动成立。**
+
+AI 能写出任何一种封装，而且写得很快、很整齐。它无法决策的是：**这个问题底下到底有几个生命周期，哪几个该被封在一起。**
+
+空谈没有意义。我们从一个最简单的需求入手。
+
+## 一、需求
+
+两个客户端通过 WebSocket 连到同一台服务器。服务器把它们配成一对，然后做中转：
+
+- A 发的每一条消息，原样转给 B；B 发的，原样转给 A。
+- 两个方向同时进行，全双工。
+- 任意一方断开，另一方也断开，服务器不能留下任何悬挂的连接或协程。
+
+需求一句话就说完了。没有业务，没有历史包袱，两种语言都有成熟的 WebSocket 库。
+
+下面会出现四份代码：`relay.go`（Go）、`relay_tokio.rs`（Rust + tokio）、`relay_std.rs`（只用 std 线程）、`relay_poll.rs`（`poll(2)`、单线程、两个方向乒乓交替）。完整源码在文章目录的 `refs/` 下。前三份是 AI 按“最常见的写法”直接写出来的；第四份，是人指出了“底下是五个生命周期”“单线程、一个协程、两个方向乒乓交替、不许用 tokio”之后才写出来的。四份我都编译并实际跑过：文本消息、100KB 的二进制消息都能正确转发，一方异常断开后另一方随即被断开。
+
+## 二、Go：读起来就是需求本身
+
+用 `gorilla/websocket`：
+
+![[refs/relay.go]]
+
+配对用一个无缓冲 channel：先到的连接在 `select` 里等着被人接走，后到的把它接走并负责中转。每个方向一个 goroutine，每条消息用 `io.Copy` 从一端的消息读取器流到另一端的消息写入器，大消息也不必整条读进内存。
+
+很顺。可是这段代码里有三处，**正确性不在代码里，而在你脑子里**：
+
+1. **一个读、一个写。** gorilla 的文档规定：同一个连接最多只能有一个并发的读者和一个并发的写者。上面的代码恰好满足——`flow(b, a)` 读 a 写 b，`flow(a, b)` 读 b 写 a。但这是我排出来的，不是类型保证的。哪天有人加了一个心跳 goroutine 往 a 里写，编译照过，运行时偶尔数据错乱。
+2. **必须两边都关。** 一个方向结束时，另一个 goroutine 还阻塞在 `NextReader()` 上。如果 `relay` 不主动 `Close` 两个连接，它就永远等下去——goroutine 泄漏，连接也泄漏。那两行 `defer` 不是风格，是生命线。
+3. **`done` 必须有缓冲。** 第二个 goroutine 退出时也要往 `done` 里发。如果 channel 没有缓冲，而 `relay` 早已返回、没人再收，它就卡在退出的最后一步。容量 2 这个数字，同样是正确性的一部分。
+
+这三条，编译器一条都不会提醒你。
+
+## 三、Rust：读起来是类型在说话
+
+用 `tokio` + `tokio-tungstenite`：
+
+![[refs/relay_tokio.rs]]
+
+对照 Go 的那三处：
+
+1. **一个读、一个写，是类型。** `split()` 把连接**按所有权**拆成一个只能读的 `SplitStream` 和一个只能写的 `SplitSink`。每一半只有一个主人。想再加一个写者？没有第二个 `SplitSink` 给你，编译不过。
+2. **关闭就是 drop。** `select!` 里任意一个方向结束，另一个 `forward` future 就被丢弃，它持有的两半也随之丢弃，底层连接关闭。不需要记得关，因为“没人持有”本身就是“关了”。
+3. **没有 `done` channel。** 结束信号就是 future 完成，不存在“发给一个已经没人收的 channel”这种状态。
+
+Go 里要靠纪律维持的三条，在这里变成了结构本身。
+
+## 四、代码之下：五个生命周期
+
+在代码里，看上去只有“两个连接”和“一次中转”。但底层其实是**五个不一样的生命周期**：
+
+| 名字 | 是什么 | 何时开始 | 何时结束 |
+| --- | --- | --- | --- |
+| `rt1` | A 这条连接 | A 握手成功 | A 的 TCP 关闭 |
+| `rt2` | B 这条连接 | B 握手成功 | B 的 TCP 关闭 |
+| `pipe` | A 和 B 的配对关系 | 配对成功 | 配对解除 |
+| `flow1` | A → B 这个方向 | `pipe` 开始 | A 不再发，或 B 不再收 |
+| `flow2` | B → A 这个方向 | `pipe` 开始 | B 不再发，或 A 不再收 |
+
+画在时间轴上：
+
+```text
+rt1    |---- 在大厅里等 ----|============================|
+rt2                    |---|============================|
+pipe                        |============================|
+flow1                       |===================|  A 先说完了
+flow2                       |============================|
+```
+
+它们之间只有一条硬约束：`flow1`、`flow2` 落在 `pipe` 里，`pipe` 落在 `rt1` 和 `rt2` 的交集里。除此之外，全是选择：
+
+- `rt1` 比 `pipe` 开始得早——A 要先在大厅里等。等的时候 A 断了，谁来发现？
+- `flow1` 结束了，`flow2` 要不要立刻结束？WebSocket 的关闭握手本身就要求：一方发出 Close 之后，反方向还要把回执传回来。TCP 也有半关闭。
+- `pipe` 结束了，`rt2` 一定要结束吗？B 也许想回到大厅，等下一个人。
+
+我们的需求“任意一方断开，另一方也断开”，其实是把五个生命周期**强行收成一个**：任何一个 `flow` 结束 ⇒ `pipe` 结束 ⇒ `rt1`、`rt2` 一起结束。这是一个设计决定，只是需求写得太顺，看不出来。
+
+再看两份代码把这五个生命周期放在了哪里。
+
+**Go：**
+
+- `rt1`：A 的 `*websocket.Conn`。注意 A 的 handler goroutine 在 `lobby <- c` 之后就返回了，`rt1` 不属于任何 goroutine，只是一个被传来传去的指针。
+- `rt2`：B 的 handler goroutine。它同时扛着 `pipe`。
+- `pipe`：`relay` 这一次函数调用。
+- `flow1`、`flow2`：两个 `flow` goroutine。
+- 嵌套关系：全靠 `defer Close` 和带缓冲的 `done` 手工维持。少写一行，生命周期就错位：`flow` 活过了 `pipe`，是 goroutine 泄漏；`rt` 活过了 `pipe`，是连接泄漏。
+
+**Rust + tokio：**
+
+- `rt1`、`rt2`：`Ws` 这个值。等待时被 mpsc channel 持有，配对后被 **move** 进 `relay` 任务。
+- `pipe`：被 spawn 出来的 `relay` 任务。
+- `flow1`、`flow2`：`select!` 里的两个 `forward` future。
+- 嵌套关系：所有权自动给的。`flow` 是 `pipe` 里的局部值，不可能活过它；`rt` 被 move 进 `pipe`，`pipe` 结束就被 drop；`select!` 让两个 `flow` 同生共死。
+- 代价：这套嵌套是**写死在所有权里**的。想让 `rt2` 活过 `pipe`（B 回大厅）？`select!` 丢掉另一个 `forward` 时，B 的两半已经跟着被 drop 了，拿不回来。要改，就得重写结构：让 `forward` 把两半还回来，再 `reunite`。
+
+**两份代码共有的漏洞：**`rt1` 在 `pipe` 开始之前那一段，没有任何结构承载它。A 在大厅里等的时候断开，没有人在读它，于是没有人发现。B 一来，就和这个已经断开的连接配成了一对，然后立刻被断开。我实际测过，Go 和 tokio 两个版本都是这样。
+
+这不是 Go 的问题，也不是 Rust 的问题。是五个生命周期里有一段，**在代码里没有对应的结构**。没有结构承载的生命周期，就没有人对它负责。
+
+## 五、不用 tokio：没有就绪通知
+
+如果不用 tokio，只用标准库线程加同步版的 `tungstenite`，会怎样？
+
+第一个发现是：**一条 WebSocket 连接没法被两个线程同时用**。同步的 `WebSocket<TcpStream>` 读和写都要 `&mut self`，拆不开。用 `Arc<Mutex<_>>` 包起来？读线程拿着锁阻塞在 `read()` 上，写线程永远拿不到锁。用 `try_clone` 把 TCP 复制一份，各建一个 `WebSocket`？两个协议状态机共享一条 TCP，读端自动回的 Pong 会和写端的数据帧交错在一起，关闭握手两边也互相不知道。
+
+最直接的写法，是每条连接一个线程独占，两个方向用 channel 连起来。AI 最初就是这么写的：1000 对连接开了 3000 个线程，CPU 是其他版本的 7 倍；大流量下，无界 channel 在内存里堆到了接近 1GiB。线程数跟着连接数涨，这条路走不通。
+
+标准库真正缺的，是**就绪通知**：没有任何 API 能告诉你“这 2000 个 socket 里，哪个现在可读”。没有它，就只剩两条路：要么每个 socket 配一个线程阻塞着等（线程爆炸），要么用固定数量的线程反复扫描非阻塞 socket（空转）。`relay_std.rs` 走后一条：一个接收线程负责握手和配对，再加上和 CPU 核数一样多的工作线程；每个工作线程拥有一批连接对，一圈一圈地扫，一圈下来什么都没搬动，就逐步退避 sleep。
+
+![[refs/relay_std.rs]]
+
+五个生命周期在 `relay_std.rs` 里：
+
+- `'rt1`、`'rt2`：`Pair` 里的两个 `Ws`。
+- `'flow1`、`'flow2`：`Pair` 里的两个 `Flow`。
+- `'pipe`：`Pair` 本身，从进入工作线程的 `Vec` 起，到被 `close` 为止。
+
+它们不再是栈上的借用，而是某个工作线程 `Vec` 里的元素。什么时候结束，取决于什么时候从 `Vec` 里被移走——编译器帮不上忙。
+
+剩下的每一条，都得自己处理：
+
+1. **异常关闭要自己翻译。** 对端直接断 TCP、发了半截帧、协议出错，在 `read()` 里都是一个 `Err`。要从里面挑出 `WouldBlock`，剩下的才是真断了。
+2. **关闭要自己做完。** 收到 Close 之后，`tungstenite` 只是把回执排进队列，不 `flush()` 就发不出去。关闭前还要把 `flow` 手里剩的消息交出去，并且切回阻塞模式、设上超时，免得一个卡住的对端拖住整个工作线程。
+3. **公平要自己保证。** 一个工作线程扫很多对连接，热的那一对每圈最多搬 64 条，否则别的连接对会被饿死。
+4. **延迟和空转二选一。** 退避上限 5ms，就是一条消息最多多等的时间；退避下限越小，空闲时越烧 CPU。
+5. **大厅里的断线要自己查。** 接收线程用 `peek` 检查等着的连接：返回 0 就是对端断了，而数据留在内核里不会被读走。但如果 A 先发了数据再断开，`peek` 看到的是数据，看不到断开。
+
+线程数固定住了（17 个），代价全部转到了 CPU 上：压测里连接多的场景，它的 CPU 时间是 `relay_poll.rs` 的 40 倍。这不是写得不好，是没有就绪通知的必然结果。
+
+回头看 `relay_tokio.rs` 那十几行：tokio 内部有就绪通知（epoll），`select!`、`forward`、drop 又替你把五个生命周期折叠进了运行时。**不用 tokio 不是更难写，而是那些本来就存在的难处，终于没人替你藏了。**
+
+## 六、一个线程，一个 Future，乒乓
+
+回头看前三个版本，每一对连接要占用多少东西：
+
+- `relay.go`：两个 handler goroutine（A 的那个交出连接后就退出了）、两个 `flow` goroutine、一个 `done` channel。
+- `relay_tokio.rs`：每条连接一个握手任务、一个 `relay` 任务、`split` 出来的四个半边（每两个半边之间靠一把 `BiLock` 共享同一条连接）、一个 `select!`。
+- `relay_std.rs`：一个接收线程、16 个工作线程，靠扫描和退避代替就绪通知。
+
+这些结构之所以存在，是因为五个生命周期被**拆散**到了不同的执行单元里，然后再用锁、channel、`Close`、drop 把它们重新拴在一起；或者，像 `relay_std.rs` 那样不拆，却因为没有就绪通知，只能拿 CPU 去换。
+
+这五个生命周期本来就是同生共死的（需求就是这么定的）。那就不拆，也不用 tokio——tokio 做的事情里，这里真正需要的只有一件：就绪通知。那就直接用 `poll(2)`：
+
+- **整个服务器只有一个线程。** 一次 `poll(2)` 等所有 socket，一个几十行的 executor 轮流 poll 被唤醒的 Future。大厅是 `Rc<RefCell<_>>`，任务借用 reactor 和大厅，全程没有 `'static`。
+- **每一对连接只有一个 Future。** 两条连接、两个方向、一个“轮到谁”的标记，全在 `relay` 返回的那一个 Future 里。
+- **两个方向乒乓交替。** 每一步是一个原子操作：最多搬一条消息。a2b 走一步，换 b2a 走一步；一边读不出来，就换另一边；两边都读不出来，才回到事件循环。
+
+![[refs/relay_poll.rs]]
+
+`relay_poll.rs` 里，五个生命周期不再是注释里的说法，而是**写进签名的 Rust 生命周期参数**。核心函数 `relay` 接收四个参数，各自对应一个生命周期；函数返回的 Future 本身，是第五个：
+
+```rust
+fn relay<'pipe, 'r, 'rt1: 'pipe, 'rt2: 'pipe, 'flow1: 'pipe, 'flow2: 'pipe>(
+    rt1: &'rt1 mut Conn<'r>,
+    rt2: &'rt2 mut Conn<'r>,
+    flow1: &'flow1 mut Flow,
+    flow2: &'flow2 mut Flow,
+) -> impl Future<Output = ()> + 'pipe
+```
+
+- `'rt1`：A 这条连接。由先到的那个任务持有，从握手开始，**在大厅里等的那一段也在**。等待时它只向 `poll(2)` 要 `POLLRDHUP`：对端断开会被发现，A 发来的消息则原样留在 socket 里，等配对之后由 `flow1` 转给 B。`relay_tokio.rs` 做不到这一点——`WebSocketStream` 只给你 `next()`，想知道断没断，就得把消息读出来。
+- `'rt2`：B 这条连接。B 的任务握手完成后，把连接放进 A 的信箱（`Mailbox`），唤醒 A，然后退出。
+- `'flow1`、`'flow2`：两个 `Flow` 枚举。**不是任务，不是线程，不是 channel，只是两个状态**，由 A 的任务在配对时创建。
+- `'pipe`：`relay` 返回的 Future。`'rt1: 'pipe` 这四个约束，就是前面说的那条唯一的硬约束——`pipe` 不能活过其余任何一个——现在由编译器检查。
+- `'r`：事件循环本身（reactor）。它比上面五个都长，不属于这对连接。
+
+把 `'flow` 和 `'pipe` 分开，是 `relay_poll.rs` 最关键的决定。`relay` 只是**借用**两个 `Flow`，所以 `pipe` 结束之后，`flow` 还活着：它手里如果还攥着一条没写出去的消息，调用方可以看见，并在关闭连接之前把它交出去（`Flow::drain`）。`relay_tokio.rs` 里，`flow` 和 `pipe` 被 `select!` 绑在一起同时 drop，这条消息就没了。轮到谁则用 `Turn` 枚举表示：单线程里，一次 `poll_step` 本身就是不可打断的一步。（唯一的原子变量在 executor 的唤醒标记里：标准库的 `Waker` 要求 `Send + Sync`，哪怕只有一个线程。）
+
+于是：
+
+1. **没有 split，没有锁，没有运行时。** 两条连接由一个 Future 独占；读不动就向 reactor 注册 `POLLIN`，写不动就注册 `POLLOUT`，一次 `poll(2)` 之后只唤醒真正就绪的那几个。
+2. **公平。** 一个方向消息再密，也只能走一步就让出来，另一个方向不会被饿死。
+3. **没有 channel，没有额外缓冲。** 每个方向手里最多攥着一条还没写出去的消息。对面写不动，这个方向就不读。背压是状态机自带的，不需要在“无界堆积”和“有界死锁”之间二选一。
+4. **关闭时先交付再走。** 任何一个方向结束，`pipe` 就结束；先把两个 `flow` 手里剩下的消息交出去，再对两边各发一次 `close`：异常断开的一侧立刻报错返回，健康的一侧先把缓冲里的消息冲出去，再收到正常的关闭帧。
+5. **大厅里的漏洞没了，也不丢配对前的消息。** A 在等的时候断开，`rt1` 的任务会发现，并直接退出。如果就在那一瞬间 B 恰好把连接交了过来，`rt1` 的任务会接住 B，替 B 回大厅继续等。
+
+我用同样的测试对比了 `relay_tokio.rs` 和 `relay_poll.rs`：
+
+| 测试 | `relay_tokio.rs` | `relay_poll.rs` |
+| --- | --- | --- |
+| A、B 互发文本和 100KB 二进制，A 断开 | 通过，B 被直接断开（1006） | 通过，B 收到关闭帧 |
+| A 在大厅里断开，之后 B、C 连上来 | B 和已断开的 A 配对后被断开，C 一直等不到人，超时 | B 和 C 配对，消息正常送达 |
+| A 在配对前就发了一条消息 | B 收到 | B 收到 |
+| 双向同时各发 500 条 64KB，其中一方收完后异常断开 | 5 次里 5 次，另一方丢掉最后一两条消息 | 5 次里 5 次，一条不丢 |
+| 压测期间进程的线程数 | 17（多线程运行时） | 1 |
+
+第四行值得多说一句。`relay_tokio.rs` 里，一方异常断开时，`select!` 直接 drop 掉另一个方向的 `forward`，它已经从连接里读出来、但还没 flush 出去的消息，跟着一起被 drop 了。**“drop 即关闭”，同时也是“drop 即丢弃”。** 这不是 tokio 的 bug，是“flow 结束时缓冲里的东西归谁”这个问题，被封装藏起来了，直到测试把它翻出来。
+
+`relay_poll.rs` 在 Go 里写不出来。Go 的连接只有阻塞式的 `Read`，一个 goroutine 阻塞在 A 上，就没法同时等 B，所以每一对连接至少要两个 goroutine。Go 的 netpoller 内部其实就是一个事件循环，但它被运行时封装起来了，用户代码碰不到。**Go 替你做了“一个连接一个执行单元”这个封装决定，代价是你没法再把两个连接放进同一个执行单元。**
+
+### 压测：内存和 CPU
+
+再看资源。下面的脚本把四个版本都编译成 release，启动服务器，用 Python 的 `websockets` 起一批客户端，两两配对后同时双向互发，期间每 10ms 从 `/proc` 采一次服务器进程的 RSS，并记录整段流量消耗的 CPU 时间。
+
+![[refs/bench.py]]
+
+在一台 16 核的 Linux 机器上跑一次的结果（release 构建；每轮都确认所有消息收齐）：
+
+**连接多、消息小**：1000 对、2000 条连接，每个客户端双向各发 20 条 1KB。
+
+<BenchTable rows={many} />
+
+<BarChart title="CPU 秒：连接多、消息小（越短越好）" rows={many} metric="cpu" unit="s" digits={2} />
+
+<BarChart title="峰值 RSS：连接多、消息小（越短越好）" rows={many} metric="peak" unit="MiB" digits={1} />
+
+**连接少、流量大**：50 对，每个客户端双向各发 200 条 64KB，共转发 1250MiB。
+
+<BenchTable rows={bulk} />
+
+<BarChart title="CPU 秒：连接少、流量大（越短越好）" rows={bulk} metric="cpu" unit="s" digits={2} />
+
+<BarChart title="峰值 RSS：连接少、流量大（越短越好）" rows={bulk} metric="peak" unit="MiB" digits={1} />
+
+怎么读这两张表：
+
+- **CPU 看“CPU 秒”，不看百分比。** 每个场景的工作量是固定的，瓶颈在 Python 客户端，所以墙钟时间差不多；同样的活儿，服务器花了多少 CPU 时间才是可比的。两个场景里，`relay_poll` 都是最少的：一个线程，大流量下 0.35 秒，`relay_tokio.rs` 0.53 秒，`relay.go` 1.00 秒。
+- **没有就绪通知的代价，就是那个 5.95。** `relay_std.rs` 和 `relay_poll.rs` 结构几乎一样（一对连接一个状态机、乒乓、每个方向最多攥一条消息），内存也几乎一样；差别只在于知不知道哪个 socket 就绪。2000 条连接时，16 个工作线程一圈圈扫描，CPU 时间是 `relay_poll.rs` 的 40 倍。
+- **流量大时，Rust 版本之间的内存差别，就是“缓冲归谁”的差别。** 每个方向最多攥一条消息的两个版本，峰值 21～30MiB；`relay_tokio.rs` 的 `forward` 会在 sink 里多攒一些，峰值 67MiB。Go 最低，因为 gorilla 用 `io.Copy` 以 4KiB 为单位流式转发，从不把一条 64KB 的消息整条放进内存；tungstenite 则总是整条读完再交出去。
+- **连接多时，Rust 三个版本的空闲内存主要是库的默认配置。** tungstenite 默认给每条连接分配 128KiB 的读缓冲，2000 条连接就是 250MiB；gorilla 默认读写缓冲各 4KiB。这一行比较的是默认配置，不是架构。
+- 每个场景只跑了一次，数字有波动，看量级就好。
+
+## 七、tokio 版本的复杂度也没有消失，它搬家了
+
+`relay_tokio.rs` 看起来短，是因为难处在写它之前就付清了：
+
+- **所有权必须先想清楚。** 连接要先 `split`，每一半给谁、活多久，要在写第一行逻辑之前定下来。Go 里两个 goroutine 共享 `*websocket.Conn` 是零成本的；Rust 里这是一个设计决定。
+- **`tokio::spawn` 要求 `'static`。** 被 spawn 的任务不能借用外面的东西，所以连接必须**整个移进去**。想在中转时顺便借用一个外面的计数器、配置或日志句柄？要么改成 `Arc`，要么别 spawn。
+- **取消是隐式的。** `select!` 丢弃另一个 future，意味着它可能停在任何一个 `.await` 上。对 `forward` 来说，被丢弃时缓冲里还没 flush 的消息会一起丢掉——第六节测出来的正是这个。只要 future 里有“读了一半、还没写完”的状态，就得考虑取消安全（cancellation safety）。这个问题，Go 程序员根本不用听说。
+- **消息是整条的。** `tungstenite` 把一条消息完整读进内存再交给你，没有 gorilla 那种“消息读取器 + `io.Copy` 流式转发”的写法。想要流式，就得往下一层自己处理帧。
+
+Go 让你**写的时候**轻松，让你**维护的时候**提心吊胆。Rust 让你**写之前**多想，换来**改的时候**有编译器兜底。总难度没变，只是换了时间和人。
+
+## 八、AI 无法决策的是
+
+这篇文章里的前三份代码，都是 AI 写的。它们都能编译、都能跑、都“正确”，也都是各自语言社区里最常见的写法：Go 就是两个 goroutine 加 `io.Copy`，tokio 就是 `split` 加 `select!`，没有 tokio 就是每条连接一个线程加 channel（后来线程数爆炸，才改成线程池加轮询）。
+
+AI 不会主动说的是：
+
+1. **这里有五个生命周期。** 需求里没写，代码里也看不出来。它们是从“连接什么时候开始、什么时候结束、谁等谁”里推出来的。
+2. **它们应该同生共死。** “任意一方断开，另一方也断开”是一个产品决定，它把五个生命周期收成了一个。换一个决定（比如 B 回大厅），结构就该完全不同。
+3. **所以它们该被封进同一个结构。** 生命周期同生共死，就不该被拆进不同的执行单元，再用锁和 channel 拴回去。
+4. **等待的那一段也是生命周期。** `rt1` 在 `pipe` 开始之前就存在。`relay.go` 和 `relay_tokio.rs` 都没有给它结构，于是有同一个漏洞；`relay_std.rs` 用 `peek` 只补上了一半。
+
+这四条，在这篇文章里都是人提出来的。AI 拿到之后，很快就写出了 `relay_poll.rs`，并用测试证明了它更正确。但在那之前，它只会把最常见的封装写得越来越好。
+
+AI 能写出每一种封装。**AI 无法决策的是：哪些东西本来就是一体的。**

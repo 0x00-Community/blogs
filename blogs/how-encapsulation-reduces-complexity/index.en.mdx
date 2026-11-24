@@ -1,0 +1,321 @@
+---
+title: How encapsulation reduces complexity, and what AI cannot decide
+date: 2026-11-24
+authors: [jabberwocky238]
+tags: [architecture, golang, rust, websocket]
+summary: A WebSocket relay hides five lifetimes. AI can write every kind of encapsulation; what it cannot decide is which lifetimes belong in the same structure.
+lang: en
+status: draft
+---
+
+export const many = [
+  { relay: 'relay.go', idle: 46.3, peak: 48.4, median: 47.3, cpu: 0.18, threads: 19 },
+  { relay: 'relay_tokio.rs', idle: 264.3, peak: 275.5, median: 275.5, cpu: 0.18, threads: 17 },
+  { relay: 'relay_std.rs', idle: 261.5, peak: 263.6, median: 262.5, cpu: 5.95, threads: 17 },
+  { relay: 'relay_poll.rs', idle: 261.4, peak: 263.5, median: 262.5, cpu: 0.15, threads: 1 },
+]
+
+export const bulk = [
+  { relay: 'relay.go', idle: 10.0, peak: 11.6, median: 11.4, cpu: 1.00, threads: 15 },
+  { relay: 'relay_tokio.rs', idle: 16.7, peak: 66.8, median: 66.5, cpu: 0.53, threads: 17 },
+  { relay: 'relay_std.rs', idle: 15.6, peak: 29.8, median: 29.8, cpu: 0.80, threads: 17 },
+  { relay: 'relay_poll.rs', idle: 15.2, peak: 21.5, median: 21.5, cpu: 0.35, threads: 1 },
+]
+
+export const columns = [
+  ['idle', 'Idle RSS MiB', 1],
+  ['peak', 'Peak RSS MiB', 1],
+  ['median', 'Median RSS MiB', 1],
+  ['cpu', 'CPU s', 2],
+  ['threads', 'Threads', 0],
+]
+
+export function BenchTable({ rows }) {
+  return (
+    <table>
+      <thead>
+        <tr>
+          <th>Relay</th>
+          {columns.map(([key, label]) => <th key={key}>{label}</th>)}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => (
+          <tr key={r.relay}>
+            <td><code>{r.relay}</code></td>
+            {columns.map(([key, , digits]) => <td key={key} style={{ textAlign: 'right' }}>{r[key].toFixed(digits)}</td>)}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
+export function BarChart({ title, rows, metric, unit, digits }) {
+  const max = Math.max(...rows.map((r) => r[metric]))
+  return (
+    <figure style={{ margin: '1.5em 0' }}>
+      <figcaption style={{ fontWeight: 600, marginBottom: '0.5em' }}>{title}</figcaption>
+      {rows.map((r) => (
+        <div key={r.relay} style={{ display: 'flex', alignItems: 'center', gap: '0.75em', margin: '0.3em 0' }}>
+          <code style={{ flex: '0 0 9em' }}>{r.relay}</code>
+          <div style={{ flex: 1 }}>
+            <div style={{ width: `${(100 * r[metric]) / max}%`, minWidth: '2px', height: '1.1em', borderRadius: '3px', background: r.relay === 'relay_poll.rs' ? '#2f9e6e' : '#5b7fd6' }} />
+          </div>
+          <span style={{ flex: '0 0 6em', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{r[metric].toFixed(digits)} {unit}</span>
+        </div>
+      ))}
+    </figure>
+  )
+}
+
+# How encapsulation reduces complexity, and what AI cannot decide
+
+The conclusion first: **encapsulation does not remove complexity. Good encapsulation puts the lifetimes that live and die together into one structure, so the constraints between them hold by construction.**
+
+AI can write any kind of encapsulation, quickly and neatly. What it cannot decide is **how many lifetimes the problem really has, and which of them belong together.**
+
+Talk is cheap, so let's start from the simplest requirement there is.
+
+## 1. The requirement
+
+Two clients connect to the same server over WebSocket. The server pairs them and relays between them:
+
+- Every message A sends goes to B unchanged, and every message B sends goes to A.
+- Both directions at the same time: full duplex.
+- When either side goes away, the other side is disconnected too, and the server leaves no dangling connection or coroutine behind.
+
+That is the whole requirement. No business logic, no legacy, and both languages have mature WebSocket libraries.
+
+There are four implementations below: `relay.go` (Go), `relay_tokio.rs` (Rust + tokio), `relay_std.rs` (std threads only) and `relay_poll.rs` (`poll(2)`, one thread, the two directions taking turns). The full sources are in the post's `refs/` folder. The first three are what AI wrote when asked for "the usual way"; the fourth was written only after a human pointed out "there are five lifetimes underneath" and "one thread, one coroutine, ping-pong between the directions, no tokio". I compiled and ran all four: text messages and 100KB binary messages are relayed correctly, and when one side drops abruptly the other is disconnected right away.
+
+## 2. Go: it reads like the requirement
+
+With `gorilla/websocket`:
+
+![[refs/relay.go]]
+
+Pairing is an unbuffered channel: the first connection waits in a `select` to be picked up, the second one picks it up and runs the relay. One goroutine per direction; each message is streamed with `io.Copy` from one side's message reader into the other side's message writer, so even large messages never sit in memory whole.
+
+Smooth. Yet in three places, **correctness lives in your head, not in the code**:
+
+1. **One reader, one writer.** gorilla's documentation says a connection supports at most one concurrent reader and one concurrent writer. The code happens to comply: `flow(b, a)` reads a and writes b, `flow(a, b)` reads b and writes a. But I arranged that; no type guarantees it. The day someone adds a heartbeat goroutine that writes to a, it still compiles, and occasionally corrupts frames at runtime.
+2. **Both sides must be closed.** When one direction ends, the other goroutine is still blocked in `NextReader()`. If `relay` does not `Close` both connections, it waits forever: a leaked goroutine and a leaked connection. Those two `defer` lines are not style, they are a lifeline.
+3. **`done` must be buffered.** The second goroutine also sends to `done` on its way out. With an unbuffered channel, and `relay` already returned with nobody receiving, it hangs on its very last step. The capacity 2 is part of correctness too.
+
+The compiler will not mention any of the three.
+
+## 3. Rust: it reads like the types are talking
+
+With `tokio` + `tokio-tungstenite`:
+
+![[refs/relay_tokio.rs]]
+
+Against Go's three points:
+
+1. **One reader, one writer is a type.** `split()` divides the connection **by ownership** into a read-only `SplitStream` and a write-only `SplitSink`. Each half has exactly one owner. Want a second writer? There is no second `SplitSink` to give you; it does not compile.
+2. **Closing is dropping.** When either direction in the `select!` finishes, the other `forward` future is dropped, the halves it holds are dropped with it, and the connection closes. Nothing to remember, because "nobody holds it" already means "closed".
+3. **No `done` channel.** The end signal is the future completing; "sending to a channel nobody reads" is not a state that exists.
+
+What Go maintains by discipline, Rust turns into structure.
+
+## 4. Under the code: five lifetimes
+
+In the code there seem to be just "two connections" and "one relay". Underneath there are **five different lifetimes**:
+
+| Name | What | Starts | Ends |
+| --- | --- | --- | --- |
+| `rt1` | connection A | A's handshake succeeds | A's TCP closes |
+| `rt2` | connection B | B's handshake succeeds | B's TCP closes |
+| `pipe` | the pairing of A and B | the pair is made | the pair is undone |
+| `flow1` | direction A → B | `pipe` starts | A stops sending, or B stops receiving |
+| `flow2` | direction B → A | `pipe` starts | B stops sending, or A stops receiving |
+
+On a timeline:
+
+```text
+rt1    |-- waiting in lobby --|============================|
+rt2                      |---|============================|
+pipe                          |============================|
+flow1                         |===================|  A is done talking
+flow2                         |============================|
+```
+
+There is exactly one hard constraint between them: `flow1` and `flow2` lie inside `pipe`, and `pipe` lies inside the intersection of `rt1` and `rt2`. Everything else is a choice:
+
+- `rt1` starts before `pipe`: A waits in the lobby first. If A disconnects while waiting, who notices?
+- When `flow1` ends, must `flow2` end at once? The WebSocket closing handshake itself needs the reverse direction to carry the reply after one side sends Close. TCP has half-close too.
+- When `pipe` ends, must `rt2` end? Maybe B wants to go back to the lobby and wait for someone else.
+
+Our requirement, "when either side goes away, the other goes too", actually **collapses five lifetimes into one**: any `flow` ends ⇒ `pipe` ends ⇒ `rt1` and `rt2` end. That is a design decision; the requirement just reads too smoothly to show it.
+
+Now look at where the two programs put these five lifetimes.
+
+**Go:**
+
+- `rt1`: A's `*websocket.Conn`. Note that A's handler goroutine returns right after `lobby <- c`; `rt1` belongs to no goroutine, it is just a pointer being passed around.
+- `rt2`: B's handler goroutine, which also carries `pipe`.
+- `pipe`: this one call of `relay`.
+- `flow1`, `flow2`: the two `flow` goroutines.
+- The nesting: maintained by hand with `defer Close` and the buffered `done`. Miss a line and the lifetimes slip: a `flow` outliving `pipe` is a goroutine leak; an `rt` outliving `pipe` is a connection leak.
+
+**Rust + tokio:**
+
+- `rt1`, `rt2`: the `Ws` values. Held by the mpsc channel while waiting, then **moved** into the `relay` task.
+- `pipe`: the spawned `relay` task.
+- `flow1`, `flow2`: the two `forward` futures in the `select!`.
+- The nesting: given by ownership. A `flow` is a local of `pipe` and cannot outlive it; each `rt` was moved into `pipe` and is dropped when it ends; `select!` makes the two `flow`s live and die together.
+- The price: this nesting is **hard-wired into ownership**. Want `rt2` to outlive `pipe` (B goes back to the lobby)? When `select!` drops the other `forward`, B's halves are dropped with it and cannot be recovered. Changing that means restructuring: have `forward` hand the halves back, then `reunite` them.
+
+**A hole both programs share:** the part of `rt1` before `pipe` starts has no structure carrying it. If A disconnects while waiting in the lobby, nobody is reading it, so nobody notices. When B arrives it is paired with that dead connection and immediately disconnected. I tested it: both the Go and the tokio version behave this way.
+
+This is not Go's fault, nor Rust's. One stretch of the five lifetimes **has no corresponding structure in the code**, and a lifetime with no structure has nobody responsible for it.
+
+## 5. Without tokio: no readiness notification
+
+What if we drop tokio and use only std threads plus the synchronous `tungstenite`?
+
+The first discovery: **one WebSocket connection cannot be used by two threads at once.** The synchronous `WebSocket<TcpStream>` needs `&mut self` both to read and to write, and cannot be split. Wrap it in `Arc<Mutex<_>>`? The reader thread holds the lock while blocked in `read()`, and the writer never gets it. Duplicate the TCP stream with `try_clone` and build a `WebSocket` on each? Then two protocol state machines share one TCP stream: the automatic Pong from the reading side gets interleaved with the writing side's data frames, and neither side knows about the other's closing handshake.
+
+The most direct design gives every connection its own thread and connects the two directions with channels. That is what AI wrote first: 3000 threads for 1000 pairs, seven times the CPU of the other versions, and under heavy traffic the unbounded channels piled up close to 1GiB. Threads grow with connections; that road is a dead end.
+
+What std really lacks is **readiness notification**: no API can tell you "which of these 2000 sockets is readable right now". Without it there are only two roads: a thread blocked on every socket (thread explosion), or a fixed number of threads scanning non-blocking sockets over and over (spinning). `relay_std.rs` takes the second: one acceptor thread does handshakes and pairing, plus one worker thread per CPU core; each worker owns a batch of pairs, scans them round after round, and backs off with an increasing sleep whenever a whole round moves nothing.
+
+![[refs/relay_std.rs]]
+
+The five lifetimes in `relay_std.rs`:
+
+- `'rt1`, `'rt2`: the two `Ws` in a `Pair`.
+- `'flow1`, `'flow2`: the two `Flow`s in that `Pair`.
+- `'pipe`: the `Pair` itself, from entering a worker's `Vec` until it is closed.
+
+They are no longer borrows on a stack but elements of some worker's `Vec`. When they end depends on when they are removed from the `Vec`; the compiler cannot help.
+
+Everything else is on you:
+
+1. **Translating abnormal closes.** A peer dropping TCP, a truncated frame, a protocol error: in `read()` they are all just an `Err`. You pick out `WouldBlock`; the rest means really gone.
+2. **Finishing the close.** After receiving Close, `tungstenite` only queues the reply; without `flush()` it is never sent. Before closing you also hand over whatever the `flow`s still hold, switch back to blocking mode and set a timeout, so one stuck peer cannot stall the whole worker.
+3. **Fairness.** One worker scans many pairs, so a busy pair may move at most 64 messages per round, or the others starve.
+4. **Latency versus spinning.** The 5ms backoff cap is the most a message may wait; the lower the backoff floor, the more CPU burns while idle.
+5. **Checking the lobby for dead peers.** The acceptor uses `peek` on the waiting connection: 0 means the peer hung up, and any pending data stays in the kernel. But if A sent data and then disconnected, `peek` sees the data, not the hang-up.
+
+The thread count is fixed (17), and the whole cost moved to the CPU: in the many-connections benchmark it spends 40 times the CPU time of `relay_poll.rs`. That is not bad code; it is what having no readiness notification costs.
+
+Look back at the dozen lines of `relay_tokio.rs`: tokio has readiness notification inside (epoll), and `select!`, `forward` and drop fold the five lifetimes into the runtime for you. **Without tokio the code is not harder to write; the difficulties that were always there simply have nobody hiding them any more.**
+
+## 6. One thread, one Future, ping-pong
+
+Look at what each pair of connections costs in the first three versions:
+
+- `relay.go`: two handler goroutines (A's exits after handing over its connection), two `flow` goroutines, one `done` channel.
+- `relay_tokio.rs`: one handshake task per connection, one `relay` task, the four halves from `split` (each two halves share one connection through a `BiLock`), one `select!`.
+- `relay_std.rs`: one acceptor thread and 16 workers, scanning and backing off in place of readiness notification.
+
+These structures exist because the five lifetimes were **torn apart** into different execution units and then tied back together with locks, channels, `Close` and drop; or, as in `relay_std.rs`, kept together but paid for in CPU because nothing says which socket is ready.
+
+These five lifetimes live and die together; the requirement says so. So don't tear them apart, and don't use tokio either: of everything tokio does, the one thing needed here is readiness notification. So use `poll(2)` directly:
+
+- **The whole server is one thread.** One `poll(2)` call waits on every socket, and an executor of a few dozen lines polls the Futures that were woken. The lobby is an `Rc<RefCell<_>>`; tasks borrow the reactor and the lobby, and there is no `'static` anywhere.
+- **One Future per pair.** Two connections, two directions and a "whose turn" marker, all in the single Future returned by `relay`.
+- **The two directions take turns.** Each step is atomic: it moves at most one message. One step of a2b, then one step of b2a; if one side has nothing to read, switch to the other; only when both are stuck do we go back to the event loop.
+
+![[refs/relay_poll.rs]]
+
+In `relay_poll.rs` the five lifetimes are no longer a story in the comments: they are **Rust lifetime parameters in the signature**. The core function `relay` takes four arguments, one per lifetime, and the Future it returns is the fifth:
+
+```rust
+fn relay<'pipe, 'r, 'rt1: 'pipe, 'rt2: 'pipe, 'flow1: 'pipe, 'flow2: 'pipe>(
+    rt1: &'rt1 mut Conn<'r>,
+    rt2: &'rt2 mut Conn<'r>,
+    flow1: &'flow1 mut Flow,
+    flow2: &'flow2 mut Flow,
+) -> impl Future<Output = ()> + 'pipe
+```
+
+- `'rt1`: connection A. Owned by the task of the first arrival, from the handshake on, **including the time spent waiting in the lobby**. While waiting it asks `poll(2)` only for `POLLRDHUP`: a hang-up is noticed, while anything A sends stays in the socket untouched, to be relayed to B by `flow1` once paired. `relay_tokio.rs` cannot do this: `WebSocketStream` only offers `next()`, and to learn whether the peer is gone you have to read the message out.
+- `'rt2`: connection B. B's task finishes the handshake, drops the connection into A's `Mailbox`, wakes A and exits.
+- `'flow1`, `'flow2`: two `Flow` enums. **Not tasks, not threads, not channels: just two states**, created by A's task when the pair is made.
+- `'pipe`: the Future returned by `relay`. The four bounds `'rt1: 'pipe` and so on are exactly the one hard constraint from section 4 (`pipe` may not outlive any of the others), now checked by the compiler.
+- `'r`: the event loop (reactor) itself. It outlives all five and does not belong to the pair.
+
+Separating `'flow` from `'pipe` is the key decision in `relay_poll.rs`. `relay` only **borrows** the two `Flow`s, so they are still alive when `pipe` ends: if one still holds a message it has not written, the caller can see it and deliver it before closing (`Flow::drain`). In `relay_tokio.rs`, `flow` and `pipe` are tied together by `select!` and dropped together, and that message is gone. Whose turn it is lives in a `Turn` enum: on one thread, one `poll_step` is already an uninterruptible step. (The only atomic is the executor's wake flag: std's `Waker` requires `Send + Sync` even on a single thread.)
+
+So:
+
+1. **No split, no lock, no runtime.** One Future owns both connections; when it cannot read it registers `POLLIN` with the reactor, when it cannot write it registers `POLLOUT`, and after one `poll(2)` only the tasks that are really ready are woken.
+2. **Fair.** However busy one direction is, it moves one step and yields; the other direction never starves.
+3. **No channel, no extra buffering.** Each direction holds at most one unwritten message. If the far side cannot take more, this direction stops reading. Backpressure comes with the state machine, with no choice between "unbounded pile-up" and "bounded deadlock".
+4. **Deliver, then leave.** When either direction ends, `pipe` ends; first the messages the `flow`s still hold are delivered, then each side gets a `close`: the broken side errors out at once, the healthy side is flushed and then receives a proper Close frame.
+5. **The lobby hole is closed, and nothing sent before pairing is lost.** If A disconnects while waiting, `rt1`'s task notices and exits. If B happens to hand over its connection at that very moment, `rt1`'s task takes B and goes back to the lobby on B's behalf.
+
+The same tests on `relay_tokio.rs` and `relay_poll.rs`:
+
+| Test | `relay_tokio.rs` | `relay_poll.rs` |
+| --- | --- | --- |
+| A and B exchange text and a 100KB binary, then A drops | pass; B is cut off (1006) | pass; B gets a Close frame |
+| A drops while in the lobby, then B and C connect | B is paired with dead A and cut off; C never gets a partner and times out | B and C are paired; messages arrive |
+| A sends a message before it is paired | B receives it | B receives it |
+| 500 × 64KB each way at once, then one side drops abruptly after receiving all | 5 runs out of 5: the other side loses the last one or two messages | 5 runs out of 5: nothing lost |
+| Threads during load | 17 (multi-threaded runtime) | 1 |
+
+The fourth row deserves a word. In `relay_tokio.rs`, when one side drops, `select!` drops the other direction's `forward` on the spot, together with any message already read from the connection but not yet flushed. **"Drop means close" also means "drop means discard".** This is not a tokio bug: the question "who owns what is buffered when a flow ends" was hidden by the encapsulation, until a test dug it out.
+
+`relay_poll.rs` cannot be written in Go. Go connections only offer a blocking `Read`; a goroutine blocked on A cannot also wait on B, so every pair needs at least two goroutines. Go's netpoller is an event loop inside, but the runtime encapsulates it and user code cannot reach it. **Go made the "one execution unit per connection" encapsulation decision for you, and the price is that you can no longer put two connections into one execution unit.**
+
+### Benchmark: memory and CPU
+
+Now resources. The script below builds all four relays in release mode, starts each server, opens a batch of clients with Python's `websockets`, and lets each pair send in both directions at once, sampling the server's RSS from `/proc` every 10ms and recording the CPU time spent on the whole run.
+
+![[refs/bench.py]]
+
+One run on a 16-core Linux machine (release builds; every run checks that all messages arrived):
+
+**Many connections, small messages**: 1000 pairs, 2000 connections, every client sends 20 × 1KB each way.
+
+<BenchTable rows={many} />
+
+<BarChart title="CPU seconds: many connections, small messages (shorter is better)" rows={many} metric="cpu" unit="s" digits={2} />
+
+<BarChart title="Peak RSS: many connections, small messages (shorter is better)" rows={many} metric="peak" unit="MiB" digits={1} />
+
+**Few connections, bulk traffic**: 50 pairs, every client sends 200 × 64KB each way, 1250MiB relayed in total.
+
+<BenchTable rows={bulk} />
+
+<BarChart title="CPU seconds: few connections, bulk traffic (shorter is better)" rows={bulk} metric="cpu" unit="s" digits={2} />
+
+<BarChart title="Peak RSS: few connections, bulk traffic (shorter is better)" rows={bulk} metric="peak" unit="MiB" digits={1} />
+
+How to read them:
+
+- **Compare CPU seconds, not percentages.** The workload of each scenario is fixed and the Python clients are the bottleneck, so wall times are similar; how much CPU the server spent on the same work is what compares. `relay_poll.rs` is lowest in both: one thread, 0.35s under bulk traffic, against 0.53s for `relay_tokio.rs` and 1.00s for `relay.go`.
+- **The cost of no readiness notification is that 5.95.** `relay_std.rs` and `relay_poll.rs` have nearly the same structure (one state machine per pair, ping-pong, at most one message held per direction) and nearly the same memory; the only difference is knowing which socket is ready. With 2000 connections, 16 workers scanning round after round spend 40 times the CPU of `relay_poll.rs`.
+- **Under bulk traffic, the memory differences between the Rust versions are differences in who holds the buffers.** The two versions that hold at most one message per direction peak at 21–30MiB; `relay_tokio.rs`'s `forward` buffers more in the sink and peaks at 67MiB. Go is lowest because gorilla streams with `io.Copy` in 4KiB pieces and never holds a 64KB message whole, while tungstenite always reads a complete message before handing it over.
+- **With many connections, the idle memory of the three Rust versions is mostly a library default.** tungstenite allocates a 128KiB read buffer per connection by default, 250MiB for 2000 connections; gorilla's default read and write buffers are 4KiB each. That row compares defaults, not architectures.
+- Each scenario was run once; numbers vary from run to run, so read the orders of magnitude.
+
+## 7. tokio's complexity did not disappear, it moved
+
+`relay_tokio.rs` looks short because its difficulties were paid before writing it:
+
+- **Ownership has to be settled first.** The connection must be `split`, and who gets each half and for how long has to be decided before the first line of logic. In Go two goroutines share a `*websocket.Conn` for free; in Rust that is a design decision.
+- **`tokio::spawn` requires `'static`.** A spawned task cannot borrow anything from outside, so connections must be **moved in whole**. Want to borrow a counter, a config or a log handle while relaying? Either make it an `Arc`, or do not spawn.
+- **Cancellation is implicit.** `select!` drops the other future wherever it happens to be, at any `.await`. For `forward`, the unflushed messages in its buffer are dropped with it; that is exactly what section 6 measured. As soon as a future holds "read half, not yet written" state, you have to think about cancellation safety. A Go programmer never has to hear the term.
+- **Messages come whole.** `tungstenite` reads a complete message into memory before handing it over; there is no gorilla-style "message reader + `io.Copy`" streaming. To stream, you go down a layer and handle frames yourself.
+
+Go makes **writing** easy and **maintaining** nerve-racking. Rust makes you think more **before writing**, and in exchange the compiler has your back **when changing**. The total difficulty did not change; only when you pay it, and who pays.
+
+## 8. What AI cannot decide
+
+The first three programs in this post were written by AI. They compile, they run, they are "correct", and each is the most common pattern in its community: in Go, two goroutines plus `io.Copy`; in tokio, `split` plus `select!`; without tokio, a thread per connection plus channels (switched to a thread pool with polling only after the thread count exploded).
+
+What AI will not volunteer:
+
+1. **There are five lifetimes here.** The requirement does not say so and the code does not show it. They are derived from "when does a connection start, when does it end, who waits for whom".
+2. **They should live and die together.** "When either side goes away, the other goes too" is a product decision, and it collapses five lifetimes into one. Decide differently (say, B goes back to the lobby) and the structure should be completely different.
+3. **So they belong in one structure.** Lifetimes that live and die together should not be torn into different execution units and tied back with locks and channels.
+4. **The waiting is a lifetime too.** `rt1` exists before `pipe` starts. `relay.go` and `relay_tokio.rs` give it no structure and share the same hole; `relay_std.rs` covers only half of it with `peek`.
+
+In this post all four came from a human. Given them, AI quickly wrote `relay_poll.rs` and showed with tests that it is more correct. Before that, it only kept writing the most common encapsulation better and better.
+
+AI can write every kind of encapsulation. **What AI cannot decide is which things were one thing all along.**
