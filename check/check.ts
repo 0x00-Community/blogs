@@ -109,6 +109,7 @@ async function checkPost(dir: string) {
       if (!allowed) report(join(dir, e.name), 'only "assets" and "refs" sub-folders are allowed');
       else
         for (const a of await readdir(join(dir, e.name), { recursive: true })) {
+          if (a.split("/").includes("__pycache__")) continue; // Python bytecode cache, git-ignored
           const path = join(dir, e.name, a);
           if ((await stat(path)).isDirectory()) continue;
           if (!allowed.test(a)) report(path, `unsupported ${kind} file type`);

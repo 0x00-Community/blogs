@@ -12,7 +12,7 @@ Blog posts of the 0x00 Community, written in [MDX](https://mdxjs.com/).
 | `blogs/<slug>/assets/` | Images / videos used by that post, referenced with relative paths |
 | `blogs/<slug>/refs/` | Source files embedded in the post with Obsidian syntax: `![[refs/relay.rs]]` |
 | `authors/<id>.yml` | One file per author: `name`, `email`, `github`, `bio` |
-| `check/` | Check script run by CI on every pull request |
+| `check/` | Check script, run locally before merging |
 
 ## 👤 Authors
 
@@ -57,4 +57,4 @@ that relative links, images and `![[refs/...]]` embeds exist inside the post fol
 
 ## 🤝 Contributing
 
-`main` is protected — open a pull request; it can be merged once the `check` workflow passes.
+`main` is protected — open a pull request, and run the check locally before merging.
