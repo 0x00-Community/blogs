@@ -1,0 +1,252 @@
+---
+title: "Judges First: Building a CSS Engine from Scratch with Brute-Force Agents"
+date: 2026-11-25
+authors: [ahpxex]
+tags: [acss, css, testing, ai, rust]
+summary: Eight days, 600+ commits, 50,000+ lines of Rust. We used coding agents to write acss, a CSS style engine, from scratch and replaced stylo with it. This is not TDD. The tests are not written by whoever writes the code; they are judges the agents cannot change. Once code is cheap, what stays scarce is verification you can trust.
+lang: en
+status: draft
+---
+
+# Judges First: Building a CSS Engine from Scratch with Brute-Force Agents
+
+From November 17 to 24, 2026, eight days, we wrote a CSS style engine called acss from scratch: 600+ commits, 50,000+ lines of Rust. Our runtime ([libacde](https://github.com/0x00-Community/libacde), built on [blitz](https://github.com/DioxusLabs/blitz)) no longer contains stylo at all. Every style is now computed by acss: it parses style sheets, matches selectors, runs the cascade, computes each element's computed values, restyles only what a DOM change affects, and hands the result to layout and paint. The DOM itself belongs to blitz, and layout and paint are not acss's job either.
+
+acss follows the architecture of stylo, the well-known, long-polished style engine used by Firefox and Servo. But it is a clean-room implementation and not a line is copied: stylo is MPL-licensed, and we wanted code of our own.
+
+Almost all of those 50,000 lines were written by coding agents. I have not read the engine code line by line, and I could not keep up if I tried: agents land dozens of commits overnight, and human code review stopped being able to keep pace long ago.
+
+So this post is about one question: **if nobody reads the code, why trust that it is correct, and fast?** Our answer is to set up "judges" the agents cannot change, before anything else. The human's job moves from reviewing code to designing and maintaining those judges.
+
+## 1. Before the first line of code, set up the judges
+
+We call this "test first". It sounds like TDD, but it is a different thing.
+
+TDD runs red, green, refactor: the developer writes a small failing test, writes just enough code to pass it, then cleans up. It was born when code was expensive to write, and its tests are first of all a **design tool**. They answer "does this function do what I meant?"
+
+With agents, the economics flip: writing code costs almost nothing, and **deciding whether code is correct** is the expensive part.
+
+| | TDD | Our test-first |
+| --- | --- | --- |
+| Who writes the tests | The developer writing the code | Browser vendors, the W3C, another engine |
+| When | Before each function | Before the first line of engine code in the whole project |
+| Scope | One function, one behaviour | Whole spec test suites, real web pages, full WPT runs |
+| What the tests are | A tool for designing interfaces | Judges independent of the implementation, which agents cannot change |
+| What the human looks at | The code | The judges' numbers, diffs and screenshots |
+
+So acss's roadmap has seven stages, and stage 1 is called "judges first". That stage writes no engine code at all. It does four things: a WPT baseline for the stylo-based runtime, a tool that compares against Chrome element by element and property by property, a performance baseline, and a one-page scoreboard.
+
+The main judges all come from outside, so an agent cannot just edit the assertions:
+
+- **WPT `css/`**: tens of thousands of spec tests maintained jointly by the browser vendors, pinned to one commit.
+- **Chrome**: a pinned version. On the same real page we compare `getComputedStyle` element by element, then compare screenshots.
+- **stylo**: before the switch, a "shadow mode" runs both engines side by side and compares every property.
+- **W3C webref**: the property data from the specs, 758 properties, used to check that our property table is complete.
+
+"Brute force" here means winning by volume, not by cleverness. CSS has hundreds of properties and dozens of value types, plus selectors, the cascade, `@layer`, `@container`, `:has()`, custom properties, animations, transitions… and every one of them has a long tail of edge cases. A small team used to need years for this. Agents do not get tired, do not get bored, and do not skip steps, so the cost of volume has collapsed. But volume needs a direction. Without judges, the more an agent writes, the more it gets wrong, and it gets things wrong with confidence. With judges, volume turns into progress.
+
+The judges paid off on day one. While measuring the baseline we found something odd: the same stylo (servo mode; the two versions were not checked against each other) passes 73.4% of the style-only WPT subset inside Servo, and only 29.3% inside our stylo-based runtime (a single run). A gap of 44 percentage points.
+
+27,340 subtests pass in Servo and fail for us. No human is going to read them one by one. We had an agent sort every single one into buckets:
+
+| Cause | Subtests |
+| --- | --- |
+| The object returned by `getComputedStyle()` has no property names on it | 11,803 |
+| `el.style.x = invalid value` is accepted | 6,914 |
+| `el.style.x` does not read back in the canonical form | 3,767 |
+| The whole file errors out or times out | 2,014 |
+| Selector and `insertRule` validation | 1,081 |
+| **The computed value itself is wrong** | **176** |
+| Not classified | 1,585 |
+
+Only 176 were wrong computed values. Of the classified failures, the vast majority sat in the layer between JS and the style engine: at the time, the CSSOM had been reimplemented separately in JS. That finding decided how acss plugs into the host. `el.style`, `getComputedStyle` and every CSSOM read and write go straight to acss; the JS layer only forwards calls and parses nothing.
+
+Bucketing 27,000 failures one by one is work no human can afford. An agent can. That is what brute force means here: **turning work humans can't afford into numbers.**
+
+## 2. Fast feedback, and judges you can trust
+
+Once the judges exist, two things matter: verification has to keep up with how fast agents change code, and the judges themselves must not be wrong.
+
+### 2.1 Take WPT off the host, and add a ratchet
+
+Real WPT runs inside the runtime: start a server, open pages, run JS. A full `css/` run is 35,000+ files and takes 40 minutes on one machine. If an agent waits 40 minutes after every change, no amount of brute force gets it off the ground.
+
+So we moved part of WPT into Rust tests that do not need the host. Scraping literals out of the test sources with regexes only catches about a third of the calls. Instead, we actually run each test file's scripts inside node's `vm`, with the DOM and `CSS` replaced by stubs that accept anything, and helpers like `test_valid_value`, `test_computed_value` and `test_interpolation` replaced by versions that only record their arguments. That captures calls generated by loops, template strings and tables too.
+
+Rust tests then replay the recorded calls against acss with the helpers' original semantics. On a dev machine it takes seconds:
+
+| Judge | Judged | Passing |
+| --- | --- | --- |
+| Parsing (`test_valid_value` etc.) | 29,111 calls | 28,883 |
+| Computed values (`test_computed_value` etc.) | 14,591 calls | 14,450 |
+| Interpolation (transitions, animations, Web Animations) | 54,284 subtests | 53,950 |
+
+This is only second-level local feedback. What counts in the end is real WPT running in the runtime.
+
+Before every commit there is a gate (`gate.sh`): formatting, clippy, unit tests, then a comparison of the three judges' results **call by call** against the last accepted baseline. There is exactly one rule: **if any single call goes from pass to fail, the commit is blocked, even if the total went up.**
+
+This rule is aimed squarely at agents. While fixing one problem, an agent can easily break another, then report "200 more passing". Looking at the total, that is progress; looking call by call, it is a hidden regression. The ratchet only looks call by call.
+
+### 2.2 No gaming the judges
+
+Agents have a well-known habit: to turn a check green, they relax the assertion or grow the skip list. It is not malice; they just want very badly to please you. So there are hard rules:
+
+- Every change to an expectation file, skip list or page set is **listed item by item** in the commit message and in the report.
+- The total of "skipped / expected to fail" **only goes down**. Raising it needs a human's approval first.
+- Every "done" comes with reproducible evidence (command, output, screenshot). Anything not run is marked "not verified".
+- From time to time an independent reviewer (another model or another developer) reads the code, **and gets only the code, not our conclusions**.
+
+### 2.3 Test the judges too
+
+Bugs in a judge often hide deeper than bugs in the engine. So we distrust every judge:
+
+- **Probes and self-checks**: before comparing against Chrome, we run a probe page with 16 known answers. If Chrome does not pass all of them, the tool is broken and we stop. The interpolation judge has a self-check that only compares start and end points, so when many tests fail at once we can tell whether the engine or the judge is broken.
+- **Accidental equality**: WPT files with `.sub.` in the name contain templates like `{{host}}`, which the test server substitutes before sending them. Our recorder first skipped that step, so the expected values kept a literal `{{host}}`. acss did not resolve URLs back then and echoed them unchanged, so both sides happened to match. 137 calls "passed" that way without testing a URL at all.
+- **Missing results are failures**: each run records which tests should produce a result, and any missing result counts as a failure. Otherwise one machine failing to start looks like "zero regressions".
+- **Plant a regression on purpose**: we ran the quick-check mode against a deliberately broken build, and it missed the regression because that file was not in its sample. So quick-check is only for self-checks after a change, never for acceptance.
+
+### 2.4 Sharded WPT runs, and a bug that wasn't ours
+
+Full WPT runs are sharded over three test machines, 8 workers each, 13 to 17 minutes per run. Mainline runs three times and the results are merged into one expectations file. After that a candidate runs once and is compared against it. A test that regresses is rerun twice on the same machine, and only counts as a real regression if it fails every time.
+
+Along the way we noticed that with the same binary on the same machine, about 2,000 reftests flipped between pass and fail, and the difference was almost always "one or two pixels off by 1". An agent chased it all the way down to the renderer, vello. vello uses `atomicAdd` to bin line segments into 16×16 tiles, so the order of segments inside a tile follows GPU scheduling, and coverage is then accumulated in f32 in that order. **Floating-point addition is not associative**, so the last bit changes, and pixels sitting exactly on a rounding boundary come out off by 1. On a Mac, 100 renders in a row were byte-for-byte identical; on Linux with Intel integrated graphics they varied.
+
+We patched the vello on our test machines to accumulate in fixed point (users always get upstream vello unchanged), and the flipping reftests went from 1,310 to 66.
+
+This has nothing to do with acss itself, but the lesson matters: **a noisy judge is a judge you can't trust.** Making the judges trustworthy is worth chasing into other people's code.
+
+## 3. Incremental restyle: differential testing, fuzzing, and daring optimizations
+
+The part of a style engine where bugs hide best is incremental restyle. When an element's class or attribute changes, which elements need restyling? Restyle too many and it is slow; miss one and the page keeps a stale style, which is very hard to spot by eye.
+
+Here we use an internal differential judge: after every incremental restyle, a second acss with **every shortcut turned off** (no caches, no ancestor filter, every element tries every rule) restyles from scratch, and every property of every element must match.
+
+Then we plug that into fuzzing: a string of random bytes decodes into up to 200 operations (create, insert, remove and move elements; change classes, attributes, states and inline styles; add and remove style sheets; resize the viewport; advance the animation clock), with restyles at random points, each compared against the from-scratch result.
+
+Fuzzing alone is not enough. You also have to ask: **does it actually catch bugs?** So we regularly run mutation tests: break the engine on purpose and see how long the fuzzer takes to notice. Remove "mark dirty on a state change" and within 3 seconds it reports an element whose `font-size` is 19.2px on one side and 16px on the other. Break the sibling-direction bookkeeping for `:has()` anchors and seed 1 catches it. Mutations it can't catch get a unit test. Whenever the input generator changes, the whole set of mutations is rerun, because a different input distribution can stop catching what it used to catch.
+
+This judge has a blind spot: the reference is also acss, so a bug in code both paths share is wrong the same way on both sides, and the differential can't see it. That part is left to WPT and unit tests.
+
+### Fast because we dare
+
+With differential fuzzing running thousands of operation sequences per second as a safety net, we can afford aggressive optimizations in incremental restyle: reusing match lists, invalidating `:has()` precisely by anchor, a fast path for animations. Each one is a bet that "this doesn't need restyling", and a lost bet means a missed update. With the from-scratch reference checking the answers every day, risky turns into routine.
+
+Below is a single-threaded benchmark from November 21. The pages are frozen copies of public websites; the test machine is pinned to one CPU core; the stylo side is version 0.22 as integrated in blitz (servo mode, sequential). Each operation runs 101 times, the whole suite runs 3 times, and we take the median. Units are milliseconds, `acss / stylo`, with the ratio in parentheses; below 1 means acss is faster:
+
+| Operation | Wikipedia | Stripe | Tailwind |
+| --- | --- | --- | --- |
+| Clear one element's class | 0.0053 / 0.0213 (0.25) | 0.0321 / 0.357 (0.09) | 0.0445 / 4.34 (0.01) |
+| Insert a 100-element subtree | 0.121 / 0.133 (0.91) | 0.128 / 0.445 (0.29) | 0.549 / 5.30 (0.10) |
+| Full restyle | 17.6 / 19.1 (0.92) | 21.4 / 36.2 (0.59) | 16.0 / 18.4 (0.87) |
+| 500 animated elements, per frame | 1.08 / 4.77 (0.23) | 1.00 / 8.88 (0.11) | 0.982 / 9.31 (0.11) |
+| Whole-page transition, per frame | 14.7 / 112.7 (0.13) | 5.01 / 52.6 (0.10) | 4.31 / 38.3 (0.11) |
+
+Rule insertion is left out of the table: in that round acss measured adding a whole new style sheet, which is not the same operation as stylo's `insertRule`. On November 23 we measured the identical operation (acss's `insert_rule`, inserting one rule that matches about 600 elements): the ratios were Wikipedia 0.50, Stripe 0.24, Tailwind 0.73. Across that round's 84 same-operation rows, none was slower than stylo.
+
+Most of the speed comes from **doing less work**. When inserting that rule matching about 600 elements, acss restyled 582 elements on Wikipedia, while 1,282 elements had their style change in stylo. With 500 animated elements, acss restyles 500 to 562 elements per frame, stylo 896 to 1,340. The more precise the invalidation, the less there is to do.
+
+### The honest part
+
+How to read these numbers:
+
+- **Single-threaded only.** stylo ran sequentially here; its parallelism was not measured.
+- **The setup favours acss.** stylo ran an extra layout pass before each sample, so we only count ratios between 0.8 and 1.0 as "not shown to be faster".
+- **Not faster everywhere.** The first style of a small page is still a little slower than stylo in our latest measurements, and changing inline styles is roughly twice as slow; the problem is in the host sync layer and is being fixed.
+- **Not graduated yet.** Fully replacing stylo has four graduation criteria: WPT passes no fewer than the stylo runtime; screenshots show no visible difference from Chrome; per-frame style time and memory no worse than stylo; 24 hours of fuzzing without a crash and a week of a real desktop without a crash. We are working through them one by one.
+
+## 4. Rules for many agents working at once
+
+Several agent sessions often work in the same repository at the same time: one fixing the cascade, one running full WPT on the test machines, one measuring performance. Tests alone don't stop the architecture from slowly drifting. These rules do.
+
+### 4.1 An `AGENTS.md` written for agents, plus the compiler
+
+At the root of the repository is an `AGENTS.md`, about sixty lines, the first file every new session reads. It holds only three kinds of things:
+
+- **Direction**: for example "follow stylo's architecture, write every line ourselves" and "two goals, performance and stability; when they conflict, stability wins".
+- **Hard rules**, each marked ⛔: do not copy stylo's code or data; no `unsafe` and no panics in non-test code; every input that can amplify has a limit; never change a judge to pass a test; nothing counts as done until it has been run.
+- **File routing**: a table saying which doc to read before writing selectors, which before writing invalidation, and so on.
+
+Whatever a machine can enforce, a machine enforces. The lints in `Cargo.toml` reject `unsafe`, `unwrap`, `expect`, `panic!` and indexing in non-test code, and `AGENTS.md` adds a rule that `#[allow]` may not be used to get around them. If humans don't review the code, let the compiler review it for them: an agent's `unwrap()` simply does not compile, which is more reliable than writing "don't panic" a hundred times in a prompt.
+
+What lints can't catch is handled by design: expanding `var()`, nesting `calc()`, nesting selectors, `@import` depth, matching steps. Every input that can amplify has a hard limit, the constants live in one module, and anything past a limit is treated as invalid per the spec. No crashes, no hangs.
+
+### 4.2 The docs are the single source of truth
+
+Nine documents under `docs/`, 3,000+ lines, are the real design of acss: architecture, host interface, data model, cascade, incremental restyle, stability, verification, roadmap, releases. A few conventions:
+
+- **No comments in the Rust code; explanations go into `docs/`.** Comments scattered over 50,000 lines are never read end to end by any session; docs are in one place and routed, so a new session knows where to look.
+- **Each mechanism is described once, in the present tense.** The docs say only "how it works now". History, dates and who decided what live in the commit messages, so the docs never turn into a diary.
+- **The human's decisions and the agents' proposals are written separately.** That was the repository's second commit. Agents easily write their own guesses down as settled facts, and the next session then takes them as given. So any plan the human hasn't approved says so explicitly in the docs ("our proposal, the user has not been asked"); only what the human signed off on counts.
+
+### 4.3 The roadmap has stages, not dates
+
+The roadmap opens with: **no time estimates**. Human scheduling experience does not transfer to agent speed, and any estimate would be wrong. Each stage says only two things: what to do, and when it counts as done. "Done" is decided entirely by the judges. Stage 4, for example: the incremental-versus-full-restyle differential fuzzer passes; in shadow mode, no differences from stylo after DOM changes; benchmarks for inserting rules, changing classes and inserting nodes no worse than stylo.
+
+### 4.4 One mainline, and machines that queue themselves
+
+Sessions share one working tree, and each commits only its own paths; one commit does one thing; the commit message says why it changed and how it was verified.
+
+Verification is split across machines by speed: the dev machine runs the seconds-long judges, and three test machines run sharded full WPT and fuzzing. Each job takes a lock first, whichever machine is free goes first, and several jobs can be submitted at once without a human queueing them.
+
+### 4.5 The human looks at one page
+
+All the judges' numbers land on one scoreboard page: WPT passes side by side with stylo and Chrome, screenshot comparisons against Chrome, performance ratios. I look at that page and decide what comes next.
+
+Releases are small and frequent: the version lives in `Cargo.toml`, and blitz pins a specific acss commit. We shipped 18 versions in a week, each with one line in `docs/releases.md`: what changed, and whether blitz needs to follow.
+
+## 5. Once writing code is cheap, what stays scarce
+
+The biggest takeaway from this week: **writing code has been democratized.**
+
+A 50,000-line style engine used to take an experienced team several years. Now one or two people with a pack of agents can replace stylo in a little over a week. Not because we are especially good, but because the marginal cost of writing code has collapsed. Expect many more "write it from scratch" projects: browser engines, JS engines, databases, compilers.
+
+So what is still scarce?
+
+### Why WPT is precious
+
+Looking back, the most valuable thing in the whole project is not the 50,000 lines we wrote, but the tens of thousands of tests we **didn't** write.
+
+WPT was built up one test at a time, over more than a decade, by Chrome, Firefox, Safari and other browser vendors and by spec authors. Its value lies in four places:
+
+1. **It is independent of any implementation.** The tests were not written by an engine's authors for their own engine; competing vendors all have to pass them. An agent can change its own code; it cannot change WPT.
+2. **It holds the edge cases nobody would think of.** `cubic-bezier()` arguments must be read as 64-bit floats, or extrapolating at 0.5 won't give exactly −0.5; `.sub.` templates must be substituted first; `in` must find property names on a `getComputedStyle` object. None of this can be derived just by reading the spec. It is more than a decade of pitfalls the engines fell into, one test per pitfall.
+3. **It is consensus.** Spec prose is ambiguous; tests are not. When browsers finish arguing, the outcome becomes a test. Writing against the tests means standing on that consensus.
+4. **It comes with ready-made references.** wpt.fyi has every major browser's results on the same commit. We never ran Chrome's or Firefox's WPT ourselves; we just imported them and got our yardsticks: Chrome 91.4%, Firefox 87.6%, Servo 73.4%.
+
+In other words, **WPT is an executable specification.** With it, "write a CSS engine from scratch" stops being an open problem and becomes a closed one you can approach step by step. And closed problems are exactly what agents are best at.
+
+Our other project, [j8](https://github.com/0x00-Community/j8) (a JavaScript engine written from scratch in Rust), follows the same playbook: its judge is TC39's test262, with a baseline of 42,500 passing tests, run on both the interpreter and the JIT, and losing a single one fails the build.
+
+### The moat is moving
+
+If writing code is no longer scarce, where is the moat? Our view: **it is moving from implementations to tests.**
+
+- **Fields with good test suites will fall to agents quickly.** CSS has WPT, JavaScript has test262, SQL has sqllogictest. Expect more and cheaper new implementations there.
+- **In fields without test suites, agents fly blind.** Without a judge, however much they write, it only "looks like it works". Whoever first writes "correct" down as executable tests defines the field.
+- **Test suites will become products in their own right.** Tests used to be an appendage of code. A good conformance suite may soon be worth more than any single implementation, because it lets anyone (and anyone's agents) build a conforming one.
+
+That is why, for our own platform interfaces, we are also writing a standard with a validator and a conformance test suite: write down "correct" first, then let the implementations catch up.
+
+### Where test-first stops
+
+To be fair, it has limits:
+
+- **Tests only cover what they test.** WPT is huge and still has gaps, so we also compare real pages against Chrome property by property, and freeze public websites into a page set the engine was never tuned on.
+- **Judges have noise, blind spots and bugs.** The one-pixel vello flips, the `{{host}}` accidental equality, both sides of a differential being wrong the same way. Making the judges stable and trustworthy took no less effort than writing the engine.
+
+## 6. What humans do in the age of agents
+
+Looking back at these eight days, I wrote almost no code. I mostly did four things:
+
+1. **Set the judges.** What counts as correct, and who decides. The judges must be things agents cannot change.
+2. **Set the rules.** The ratchet, listing every change, totals that only go down, code without conclusions for reviewers. These rules don't guard against agents being malicious; they guard against agents wanting too much to please you.
+3. **Make the calls.** Agents propose plans, often many of them. Which way to go, which features to drop, which goal wins when two conflict: those are human decisions.
+4. **Read the numbers.** Not the code: the scoreboard, the screenshots, the ratios.
+
+TDD taught a generation of programmers to "write the test first". In the age of agents that becomes: **set the judges first.** Tests are no longer a helper for writing code; writing code becomes the way to get past the judges.
+
+Brute force only gets the plane off the ground if it has instruments. Agents gave us almost unlimited power; judges-first is how we put instruments on that power.
+
+---
+
+Thanks to [stylo](https://github.com/servo/stylo) and the Servo community: much of acss's design was learned from it. Thanks to [blitz](https://github.com/DioxusLabs/blitz), [web-platform-tests](https://github.com/web-platform-tests/wpt) and W3C's [webref](https://github.com/w3c/webref); without them there would be no judges.
